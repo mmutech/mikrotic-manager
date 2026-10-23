@@ -12,13 +12,34 @@ MMUTech is a production-ready Laravel 12/13 + Livewire 4 + Tailwind CSS v4 syste
 - **Auth/RBAC**: Spatie Permission, roles (super-admin, network-admin, support, finance, customer), policies enforce permissions
 - **Security**: Host allowlist/SSRF protection, encrypted router passwords, redaction, audit logging, correlation IDs, security headers
 
-## Features (Phase 1)
+## Features (Phases 1–7)
+
+### Phase 1 — Foundation
 - **Authentication**: Login, forgot/reset password, forced password change, account security page, session management
 - **Router Registry**: Register/edit/archive routers with SSRF-protected hosts, TLS/HTTP controls, credential rotation (no password readback), monitoring toggle
 - **Health Monitoring**: Queued read-only connection tests (`TestRouterConnectionJob`), scheduled `SyncRouterHealthJob`, health history, API call logs
 - **Access Control**: Router visibility scoped via `router_user` pivot; super-admin only can grant/revoke access; creator auto-attached
 - **Audit Trail**: Immutable audit logs with redaction, filters, detail modal
 - **Dashboard**: Real scoped metrics (no fake data)
+
+### Phase 2 — Plans & Vouchers
+- **Plans**: CRUD tied to a router (`plans.router_id`), auto-generated `PLN-XXXXXXXX` codes, scoped listing and policy checks per router
+- **Vouchers**: Generate (router-dependent plan dropdown, server-side plan/router validation), list/filter, show, revoke
+- **Customers**: Create/edit/show, router-scoped visibility
+- **Purchases/Transactions**: Read-only listing and detail views with router scoping
+
+### Phase 3 — Provisioning & Payments
+- **Voucher provisioning**: `VoucherProvisioningService` + queued `ProvisionVoucherJob`/`RevokeVoucherJob` against RouterOS hotspot users; lifecycle status kept separate from provisioning status
+- **Paystack**: Hosted checkout initiation, callback verification, HMAC-SHA512 webhook handling, payment recorded independently of provisioning
+
+### Phase 4 — Test Coverage
+- Policy tests for plans, vouchers, customers, transactions; factories for all core models
+
+### Phase 5–7 — Reporting, Administration, Billing
+- **Reports**: Scoped, real metrics for vouchers/transactions/purchases
+- **Users**: CRUD, role assignment, router assignment, active/disabled status
+- **Roles & Permissions**: Role CRUD with permission matrix (Spatie)
+- **Subscriptions**: Network admins require an active subscription; `EnsureSubscriptionIsActive` (`subscribed`) middleware gates operational routes, `SubscriptionService` (super-admin only) activates/deactivates with audit logging; self-service renewal requests from `/subscription`; management UI under `/subscriptions/manage`
 
 ## Quick Start
 ```bash

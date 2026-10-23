@@ -2,7 +2,6 @@
 
 namespace Tests\Feature\Routers;
 
-use App\Enums\UserStatus;
 use App\Models\Router;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -16,6 +15,7 @@ class RouterAccessTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('network-admin');
+        $this->grantSubscription($user);
         $router = Router::factory()->create();
 
         $this->actingAs($user);
@@ -26,6 +26,7 @@ class RouterAccessTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('network-admin');
+        $this->grantSubscription($user);
         $router = Router::factory()->create();
         $router->users()->attach($user->id);
 
@@ -37,6 +38,7 @@ class RouterAccessTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('network-admin');
+        $this->grantSubscription($user);
         $allowed = Router::factory()->create(['name' => 'ALLOWED-ROUTER']);
         $denied = Router::factory()->create(['name' => 'DENIED-ROUTER']);
         $allowed->users()->attach($user->id);
@@ -52,6 +54,7 @@ class RouterAccessTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('network-admin');
+        $this->grantSubscription($user);
         $router = Router::factory()->create(['created_by' => $user->id]);
         $router->users()->syncWithoutDetaching([$user->id => ['granted_by' => $user->id]]);
 

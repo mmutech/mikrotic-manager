@@ -36,6 +36,11 @@ Route::post('/logout', function () {
 })->middleware('auth')->name('logout');
 
 Route::middleware(['auth', 'active'])->group(function (): void {
+    Route::livewire('/subscription', 'pages::subscriptions.index')->name('subscriptions.index');
+    Route::livewire('/account/password', 'pages::account.password')->name('account.password');
+});
+
+Route::middleware(['auth', 'active', 'subscribed'])->group(function (): void {
     Route::livewire('/dashboard', 'pages::dashboard')->name('dashboard');
 
     Route::livewire('/routers', 'pages::routers.index')->name('routers.index');
@@ -65,6 +70,9 @@ Route::middleware(['auth', 'active'])->group(function (): void {
 
     Route::livewire('/reports', 'pages::reports.index')->name('reports.index');
 
+    Route::livewire('/subscriptions/manage', 'pages::subscriptions.manage')->name('subscriptions.manage');
+    Route::livewire('/subscriptions/manage/{user}', 'pages::subscriptions.user')->name('subscriptions.user');
+
     Route::livewire('/users', 'pages::users.index')->name('users.index');
     Route::livewire('/users/create', 'pages::users.create')->name('users.create');
     Route::livewire('/users/{user}', 'pages::users.show')->name('users.show');
@@ -79,6 +87,4 @@ Route::middleware(['auth', 'active'])->group(function (): void {
     Route::livewire('/roles/{role}/permissions', 'pages::roles.permissions')->name('roles.permissions');
 
     Route::livewire('/audit', 'pages::audit.index')->name('audit.index');
-
-    Route::livewire('/account/password', 'pages::account.password')->name('account.password');
 });

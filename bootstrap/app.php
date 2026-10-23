@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsureSubscriptionIsActive;
 use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\SecurityHeaders;
 use App\Http\Middleware\SetCorrelationId;
@@ -22,6 +23,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'active' => EnsureUserIsActive::class,
+            'subscribed' => EnsureSubscriptionIsActive::class,
         ]);
 
         if (env('TRUSTED_PROXIES') !== null) {

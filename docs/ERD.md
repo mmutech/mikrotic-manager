@@ -15,13 +15,16 @@
 - `api_logs`: read-only API call telemetry (redacted)
 
 ### Plans & Purchases
-- `plans`: data bundle plans
+- `plans`: data bundle plans (belongs to router via nullable `router_id`, auto-generated `code`)
 - `router_plan_profiles`: mapping between routers and hotspot profiles
 - `purchases`: customer purchases
 - `vouchers`: generated vouchers with lifecycle and provisioning status (separate)
 - `voucher_usage`: usage tracking
 - `transactions`: payment transactions
 - `payment_webhook_events`: Paystack webhooks
+
+### Billing
+- `subscriptions`: user_id, optional router_id, plan, status (pending/active/expired/approved), starts_at, expires_at, amount, currency, metadata — required for `network-admin` access
 
 ### System
 - `audit_logs`: immutable audit trail
@@ -31,7 +34,8 @@
 - `cache`, `jobs`, `sessions`: framework tables
 
 ## Key Relationships
-- User has many Customers, belongs to many Routers
+- User has many Customers, belongs to many Routers, has many Subscriptions
+- Plan belongs to a Router (nullable); a Router has many Plans
 - Router belongs to many Users, has many Vouchers/Purchases/Sessions/Jobs/HealthChecks/ApiLogs
 - Voucher belongs to Router and Plan, has usage records
 - Purchase belongs to User/Customer/Plan/Router/Transaction

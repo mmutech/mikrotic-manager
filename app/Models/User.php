@@ -63,6 +63,39 @@ class User extends Authenticatable
             ->where('actor_type', self::class);
     }
 
+    public function subscriptions(): HasMany
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    public function activeSubscription(): ?Subscription
+    {
+        return $this->subscriptions()
+            ->where('status', 'active')
+            ->where('expires_at', '>', now())
+            ->latest('expires_at')
+            ->first();
+    }
+
+    public function requiresSubscription(): bool
+    {
+        return $this->hasRole('network-admin');
+    }
+
+    /**
+     * Network administrators must hold a valid subscription to operate.
+     */
+    public function hasActiveSubscription(): bool
+    {
+        if ($this->isSuperAdmin()) {
+            return true;
+        }
+        if (! $this->requiresSubscription()) {
+            return true;
+        }
+        return $this->activeSubscription() !== null;
+    }
+
     public function isActive(): bool
     {
         return $this->status === UserStatus::Active && ! $this->trashed();
