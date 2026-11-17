@@ -58,7 +58,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
             'host' => ['required', 'string', 'max:253', new SafeRouterHost],
             'rest_port' => ['required', 'integer', Rule::in((array) config('mikrotik.allowed_ports', [443, 8729]))],
             'api_username' => ['required', 'string', 'max:120'],
-            'api_password' => ['required', 'string', 'min:8', 'max:255'],
+            'api_password' => ['required', 'string', 'min:5', 'max:255'],
             'tls_verify' => ['boolean'],
             'monitoring_enabled' => ['boolean'],
             'notes' => ['nullable', 'string', 'max:2000'],
