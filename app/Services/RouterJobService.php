@@ -7,15 +7,17 @@ use App\Enums\RouterStatus;
 use App\Models\Router;
 use App\Models\RouterJob;
 use App\Models\User;
+use App\Support\CorrelationContext;
 use App\Support\Redactor;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 use Throwable;
 
 class RouterJobService
 {
     public function __construct(
         private readonly Redactor $redactor,
-        private readonly \App\Support\CorrelationContext $correlation,
+        private readonly CorrelationContext $correlation,
     ) {}
 
     /**
@@ -30,17 +32,14 @@ class RouterJobService
         ?string $idempotencyKey = null,
     ): RouterJob {
         if ($idempotencyKey !== null) {
-            $existing = RouterJob::query()
-                ->where('idempotency_key', $idempotencyKey)
-                ->whereIn('status', [
-                    RouterJobStatus::Queued->value,
-                    RouterJobStatus::Running->value,
-                    RouterJobStatus::Retrying->value,
-                ])
-                ->first();
+            $existing = $this->findPendingByIdempotencyKey($router, $type, $idempotencyKey);
 
             if ($existing !== null) {
                 return $existing;
+            }
+
+            if (RouterJob::query()->where('idempotency_key', $idempotencyKey)->exists()) {
+                $idempotencyKey = substr($idempotencyKey, 0, 82).':'.Str::uuid();
             }
         }
 
@@ -117,5 +116,25 @@ class RouterJobService
     public function markRouterDisabled(Router $router): void
     {
         $router->forceFill(['status' => RouterStatus::Disabled, 'monitoring_enabled' => false])->save();
+    }
+
+    private function findPendingByIdempotencyKey(Router $router, string $type, string $idempotencyKey): ?RouterJob
+    {
+        return RouterJob::query()
+            ->where('router_id', $router->getKey())
+            ->where('type', $type)
+            ->where(function ($query) use ($idempotencyKey): void {
+                $query->where('idempotency_key', $idempotencyKey)
+                    ->orWhereRaw('substr(idempotency_key, 1, ?) = ?', [
+                        strlen($idempotencyKey) + 1,
+                        $idempotencyKey.':',
+                    ]);
+            })
+            ->whereIn('status', [
+                RouterJobStatus::Queued->value,
+                RouterJobStatus::Running->value,
+                RouterJobStatus::Retrying->value,
+            ])
+            ->first();
     }
 }

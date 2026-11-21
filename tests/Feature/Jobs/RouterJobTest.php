@@ -3,14 +3,11 @@
 namespace Tests\Feature\Jobs;
 
 use App\Enums\RouterJobStatus;
-use App\Enums\RouterStatus;
-use App\Jobs\TestRouterConnectionJob;
 use App\Models\Router;
 use App\Models\RouterJob;
 use App\Models\User;
 use App\Services\RouterJobService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class RouterJobTest extends TestCase
@@ -42,6 +39,25 @@ class RouterJobTest extends TestCase
         $service->create($router, 'test_connection', $user, [], null, 'router-test:'.$router->getKey());
 
         $this->assertTrue($service->pendingTestExists($router));
+    }
+
+    public function test_idempotency_key_can_be_reused_after_the_previous_job_finishes(): void
+    {
+        $user = User::factory()->create();
+        $router = Router::factory()->create();
+        $service = app(RouterJobService::class);
+        $idempotencyKey = 'router-test:'.$router->getKey();
+
+        $firstJob = $service->create($router, 'test_connection', $user, [], null, $idempotencyKey);
+        $service->markSucceeded($firstJob);
+
+        $nextJob = $service->create($router, 'test_connection', $user, [], null, $idempotencyKey);
+        $duplicateNextJob = $service->create($router, 'test_connection', $user, [], null, $idempotencyKey);
+
+        $this->assertNotSame($firstJob->idempotency_key, $nextJob->idempotency_key);
+        $this->assertEquals(RouterJobStatus::Queued, $nextJob->status);
+        $this->assertSame($nextJob->getKey(), $duplicateNextJob->getKey());
+        $this->assertSame(2, RouterJob::query()->where('router_id', $router->getKey())->count());
     }
 
     public function test_job_can_be_marked_succeeded_or_failed(): void
