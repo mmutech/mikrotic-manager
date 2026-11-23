@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Route;
 | Web routes
 |--------------------------------------------------------------------------
 |
-| Every authenticated page is a Livewire single-file component. Access
+| Every authenticated page is a Livewire component. Access
 | control is enforced in two layers: middleware here (guest/auth/active)
 | and policies inside each component's mount() and action methods.
 |

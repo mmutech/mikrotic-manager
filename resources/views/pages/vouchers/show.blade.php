@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\ProvisioningStatus;
 use App\Jobs\ProvisionVoucherJob;
 use App\Jobs\RevokeVoucherJob;
 use App\Models\Voucher;
@@ -20,7 +21,19 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
     public function provision(): void
     {
         $this->authorize('provision', $this->voucher);
-        $this->voucher->update(['provisioning_status' => 'queued']);
+
+        $this->voucher->refresh();
+
+        if (! in_array($this->voucher->provisioning_status, [
+            ProvisioningStatus::Pending,
+            ProvisioningStatus::Failed,
+        ], true)) {
+            session()->flash('error', 'Only pending or failed vouchers can be provisioned.');
+
+            return;
+        }
+
+        $this->voucher->update(['provisioning_status' => ProvisioningStatus::Queued]);
         ProvisionVoucherJob::dispatch($this->voucher->id, auth()->id());
         session()->flash('status', 'Provisioning queued.');
         $this->redirectRoute('vouchers.show', ['voucher' => $this->voucher->public_id], navigate: true);
@@ -39,6 +52,7 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
     {
         $user = auth()->user();
         $this->voucher = $this->voucher->fresh()->load(['plan', 'router', 'customer', 'generator']);
+
         return $this->view([
             'canRevoke' => $user->can('revoke', $this->voucher),
             'canProvision' => $user->can('provision', $this->voucher),

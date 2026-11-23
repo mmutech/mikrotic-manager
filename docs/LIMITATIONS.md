@@ -20,7 +20,7 @@
 - **HTTP Port 80**: Disabled by default for security. Only enable with explicit `ROUTER_ALLOW_HTTP=true` and understanding of risks.
 - **Single Connection**: Each probe creates a new connection; no connection pooling.
 - **Queue Dependency**: Health monitoring, provisioning, and revocation require queue workers running.
-- **RouterOS Variance**: Hotspot user provisioning depends on RouterOS 7 API behavior and per-router hotspot profile configuration; profile mapping is not fully automated.
+- **RouterOS Variance**: Hotspot user provisioning depends on RouterOS 7 API behavior. Standalone user profiles can be created on a router, but voucher assignment remains tied to the existing plan profile and is not changed by profile creation.
 - **Test Coverage**: 43 tests cover policies, auth, router access, plan/router scoping, provisioning jobs, and subscriptions. Broader end-to-end/UI coverage is still needed.
 
 ## Security Considerations

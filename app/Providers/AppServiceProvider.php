@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Contracts\RouterGateway;
 use App\Models\Customer;
 use App\Models\Plan;
 use App\Models\Router;
@@ -15,6 +16,7 @@ use App\Policies\RouterPolicy;
 use App\Policies\TransactionPolicy;
 use App\Policies\UserPolicy;
 use App\Policies\VoucherPolicy;
+use App\Services\Mikrotik\MikrotikRouterGateway;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\URL;
@@ -27,7 +29,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(
+            RouterGateway::class,
+            MikrotikRouterGateway::class
+        );
     }
 
     /**

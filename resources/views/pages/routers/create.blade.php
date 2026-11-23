@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
 use App\Models\Router;
 use App\Models\User;
@@ -86,6 +87,26 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
                 ->each(fn (User $user) => $registry->grantAccess($router, $user, $actor));
         }
 
+        $identityJob = $jobs->create(
+            router: $router,
+            type: 'sync_identity',
+            actor: $actor,
+            idempotencyKey: 'router-identity:'.$router->getKey().':'.hash('sha256', $router->name),
+        );
+
+        $audit->record(
+            'router.identity_sync_queued',
+            $router,
+            metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_create'],
+            actor: $actor,
+        );
+
+        SyncRouterIdentityJob::dispatch(
+            routerId: $router->getKey(),
+            routerJobId: $identityJob->getKey(),
+            correlationId: $identityJob->correlation_id,
+        )->afterCommit();
+
         $job = $jobs->create(
             router: $router,
             type: 'test_connection',
@@ -107,7 +128,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash('status', 'Router registered. A read-only connection test has been queued.');
+        session()->flash('status', 'Router registered. Its RouterOS identity sync and a read-only connection test have been queued.');
 
         $this->redirectRoute('routers.show', ['router' => $router->public_id], navigate: true);
     }
@@ -144,7 +165,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
         </a>
         <p class="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-brand-600">Network inventory</p>
         <h1 class="mt-2 text-2xl font-bold tracking-tight text-slate-900">Register a router</h1>
-        <p class="mt-1 text-sm text-slate-500">Only read-only REST calls are made during registration. Nothing is written to the router.</p>
+        <p class="mt-1 text-sm text-slate-500">The router name is applied as its RouterOS system identity. A read-only connection test is also queued.</p>
     </div>
 
     <form wire:submit="save" class="space-y-6">
@@ -204,6 +225,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
                     <label for="api_username" class="mm-label">RouterOS API user <span class="text-red-500">*</span></label>
                     <input id="api_username" type="text" wire:model="api_username" required maxlength="120" autocomplete="off" class="mm-input font-mono" placeholder="mmutech-api">
                     @error('api_username') <p class="mm-error">{{ $message }}</p> @enderror
+                    <p class="mm-help">Needs RouterOS read, write, and rest-api policies. The write policy grants broader access than changing identity alone.</p>
                 </div>
 
                 <div class="sm:col-span-3">

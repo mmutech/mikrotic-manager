@@ -13,8 +13,11 @@ use Livewire\Component;
 new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Component
 {
     public string $router_id = '';
+
     public string $plan_id = '';
+
     public int $quantity = 10;
+
     public string $prefix = '';
 
     public function mount(): void
@@ -58,6 +61,8 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
                 'data_allowance_bytes' => $plan->data_allowance_bytes,
                 'time_allowance_seconds' => $plan->time_allowance_seconds,
                 'validity_seconds' => $plan->validity_seconds,
+                'validity_starts' => $plan->validity_starts,
+                'expiry_policy' => $plan->expiry_policy,
                 'lifecycle_status' => 'pending',
                 'provisioning_status' => 'pending',
             ]);
@@ -74,7 +79,7 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
     public function render()
     {
         $user = auth()->user();
-        
+
         $routers = $user->isSuperAdmin() ? Router::query()->orderBy('name')->get() : $user->routers()->orderBy('name')->get();
         $plans = collect();
 

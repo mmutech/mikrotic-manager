@@ -176,7 +176,7 @@ new #[Layout('layouts::app')] #[Title('Dashboard')] class extends Component
                     </span>
                 </div>
                 <p class="mt-3 text-3xl font-bold tracking-tight text-slate-900">{{ number_format($stats['pending']) }}</p>
-                <p class="mt-1 text-xs text-slate-500">{{ number_format($pendingJobs) }} queued or running probe{{ $pendingJobs === 1 ? '' : 's' }}</p>
+                <p class="mt-1 text-xs text-slate-500">{{ number_format($pendingJobs) }} queued or running router job{{ $pendingJobs === 1 ? '' : 's' }}</p>
             </div>
         </section>
 

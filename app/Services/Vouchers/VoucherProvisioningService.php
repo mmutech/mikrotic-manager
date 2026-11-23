@@ -3,13 +3,14 @@
 namespace App\Services\Vouchers;
 
 use App\Enums\ProvisioningStatus;
+use App\Enums\RouterErrorCategory;
 use App\Enums\VoucherLifecycleStatus;
-use App\Models\Router;
 use App\Models\Voucher;
 use App\Services\AuditLogger;
 use App\Services\RouterApiRecorder;
 use App\Services\RouterConnectionFactory;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Mivo\LaravelMikrotikRos7\Services\HotspotManager;
 use Throwable;
 
@@ -23,16 +24,26 @@ class VoucherProvisioningService
 
     public function provision(Voucher $voucher, ?string $correlationId = null): void
     {
-        $correlationId ??= (string) \Illuminate\Support\Str::uuid();
+        $correlationId ??= (string) Str::uuid();
         $voucher->loadMissing(['router', 'plan']);
 
-        if ($voucher->provisioning_status === ProvisioningStatus::Provisioning) {
+        $claimed = Voucher::query()
+            ->whereKey($voucher->getKey())
+            ->whereIn('provisioning_status', [
+                ProvisioningStatus::Pending->value,
+                ProvisioningStatus::Queued->value,
+                ProvisioningStatus::Failed->value,
+            ])
+            ->update([
+                'provisioning_status' => ProvisioningStatus::Provisioning,
+                'provisioning_error' => null,
+            ]);
+
+        if ($claimed !== 1) {
             return;
         }
 
-        $voucher->update([
-            'provisioning_status' => ProvisioningStatus::Provisioning,
-        ]);
+        $voucher->refresh();
 
         $router = $voucher->router;
         $started = hrtime(true);
@@ -89,7 +100,7 @@ class VoucherProvisioningService
                 'PUT',
                 '/rest/ip/hotspot/user',
                 $this->elapsedMs($started),
-                \App\Enums\RouterErrorCategory::Unknown,
+                RouterErrorCategory::Unknown,
                 $e->getMessage(),
                 null,
                 ['name' => $voucher->username],
@@ -99,6 +110,7 @@ class VoucherProvisioningService
 
             $voucher->update([
                 'provisioning_status' => ProvisioningStatus::Failed,
+                'provisioning_error' => $e->getMessage(),
             ]);
 
             $this->audit->record('voucher.provision_failed', $voucher, metadata: ['error' => $e->getMessage()], actor: auth()->user(), correlationId: $correlationId);
@@ -108,7 +120,7 @@ class VoucherProvisioningService
 
     public function revoke(Voucher $voucher, ?string $correlationId = null): void
     {
-        $correlationId ??= (string) \Illuminate\Support\Str::uuid();
+        $correlationId ??= (string) Str::uuid();
         $voucher->loadMissing(['router']);
 
         $started = hrtime(true);
@@ -143,7 +155,7 @@ class VoucherProvisioningService
                 'DELETE',
                 '/rest/ip/hotspot/user',
                 $this->elapsedMs($started),
-                \App\Enums\RouterErrorCategory::Unknown,
+                RouterErrorCategory::Unknown,
                 $e->getMessage(),
                 null,
                 ['name' => $voucher->username],

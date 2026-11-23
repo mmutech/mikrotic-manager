@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
 use App\Models\Router;
 use App\Rules\SafeRouterHost;
@@ -84,10 +85,33 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
 
         /** @var \App\Models\User $actor */
         $actor = auth()->user();
+        $nameChanged = trim($validated['name']) !== $this->router->name;
         $endpointChanged = $validated['host'] !== $originalHost || (int) $validated['rest_port'] !== $originalPort;
         $passwordChanged = filled($validated['api_password'] ?? null);
 
         $registry->update($this->router, $validated, $actor);
+
+        if ($nameChanged) {
+            $identityJob = $jobs->create(
+                router: $this->router,
+                type: 'sync_identity',
+                actor: $actor,
+                idempotencyKey: 'router-identity:'.$this->router->getKey().':'.hash('sha256', $this->router->name),
+            );
+
+            $audit->record(
+                'router.identity_sync_queued',
+                $this->router,
+                metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_update'],
+                actor: $actor,
+            );
+
+            SyncRouterIdentityJob::dispatch(
+                routerId: $this->router->getKey(),
+                routerJobId: $identityJob->getKey(),
+                correlationId: $identityJob->correlation_id,
+            )->afterCommit();
+        }
 
         if ($this->monitoring_enabled || $endpointChanged || $passwordChanged) {
             $job = $jobs->create(
@@ -111,7 +135,11 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
                 correlationId: $job->correlation_id,
             )->afterCommit();
 
-            session()->flash('status', 'Router updated. A read-only connection test has been queued.');
+            session()->flash('status', $nameChanged
+                ? 'Router updated. Its RouterOS identity sync and a read-only connection test have been queued.'
+                : 'Router updated. A read-only connection test has been queued.');
+        } elseif ($nameChanged) {
+            session()->flash('status', 'Router updated. Its RouterOS identity sync has been queued.');
         } else {
             session()->flash('status', 'Router updated.');
         }
@@ -141,7 +169,7 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
         </a>
         <p class="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-brand-600">Network inventory</p>
         <h1 class="mt-2 text-2xl font-bold tracking-tight text-slate-900">Edit {{ $router->name }}</h1>
-        <p class="mt-1 text-sm text-slate-500">Changing the host, port, or credentials resets stale identity data and queues a fresh read-only probe.</p>
+        <p class="mt-1 text-sm text-slate-500">Changing the router name queues an update to its RouterOS system identity. Changing the host, port, or credentials resets stale health data and queues a fresh read-only probe.</p>
     </div>
 
     <form wire:submit="save" class="space-y-6">
@@ -194,6 +222,7 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
                     <label for="api_username" class="mm-label">RouterOS API user <span class="text-red-500">*</span></label>
                     <input id="api_username" type="text" wire:model="api_username" required maxlength="120" autocomplete="off" class="mm-input font-mono">
                     @error('api_username') <p class="mm-error">{{ $message }}</p> @enderror
+                    <p class="mm-help">Needs RouterOS read, write, and rest-api policies. The write policy grants broader access than changing identity alone.</p>
                 </div>
 
                 <div class="sm:col-span-3">

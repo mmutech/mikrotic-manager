@@ -13,7 +13,7 @@
 - **SSRF Protection**: `RouterHostPolicy` validates hosts resolve to approved CIDR ranges (configurable via `MIKROTIK_MANAGEMENT_NETWORKS`)
 - **Port Restrictions**: Only ports 443, 8729 allowed by default; HTTP (80) disabled unless `ROUTER_ALLOW_HTTP=true`
 - **TLS**: Verification enforced in production; can be disabled per-router only in non-production for lab certs
-- **Read-Only Operations**: All probes use read-only endpoints (`/rest/system/identity`, `/rest/system/resource`, `/rest/ip/hotspot/profile`)
+- **Router Operations**: Health probes use read-only endpoints (`/rest/system/identity`, `/rest/system/resource`, `/rest/ip/hotspot/profile`). Registration/name changes write the configured name to `/rest/system/identity`. Authorized administrators can create a bridge, add explicitly selected Ethernet ports, and configure LAN addressing, DHCP, NAT, and firewall rules. These writes require RouterOS `write` permission, which grants broader configuration access than these operations alone. Bridge and network configuration require separate impact confirmations. The network firewall permits new management connections from supplied CIDRs, accepts established traffic, drops other WAN input, and drops new non-dstnat WAN forwarding. An incorrect management CIDR or WAN selection can interrupt connectivity; verify values and review read-back warnings before applying.
 
 ## Audit & Logging
 - All sensitive actions logged via `AuditLogger` with redaction
@@ -22,6 +22,7 @@
 - Router passwords never included in audit payloads
 - API logs record endpoint/method/status/latency only, no request/response bodies
 - Correlation IDs track requests across jobs
+- Network configuration inputs and read-back reports are stored with tracked router jobs; they contain site IP/CIDR data and must be treated as operationally sensitive.
 
 ## Network Security
 - Security headers middleware adds X-Content-Type-Options, X-Frame-Options, CSP-related headers, HSTS (on HTTPS)

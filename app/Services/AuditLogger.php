@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\AuditLog;
-use App\Models\User;
 use App\Support\CorrelationContext;
 use App\Support\Redactor;
 use Illuminate\Database\Eloquent\Model;
@@ -29,11 +28,12 @@ class AuditLogger
         array $after = [],
         array $metadata = [],
         ?Model $actor = null,
+        ?string $correlationId = null,
     ): AuditLog {
         $actor ??= Auth::user();
 
         return AuditLog::create([
-            'correlation_id' => $this->correlation->id(),
+            'correlation_id' => $correlationId ?? $this->correlation->id(),
             'actor_type' => $actor?->getMorphClass(),
             'actor_id' => $actor?->getKey(),
             'action' => $action,

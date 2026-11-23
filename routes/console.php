@@ -1,12 +1,18 @@
 <?php
 
 use App\Jobs\SyncRouterHealthJob;
+use App\Jobs\SyncVoucherValidityJob;
 use App\Models\ApiLog;
 use App\Models\RouterHealthCheck;
 use Illuminate\Support\Facades\Schedule;
 
 Schedule::job(new SyncRouterHealthJob)
     ->everyFiveMinutes()
+    ->withoutOverlapping()
+    ->onOneServer();
+
+Schedule::job(new SyncVoucherValidityJob)
+    ->everyMinute()
     ->withoutOverlapping()
     ->onOneServer();
 

@@ -111,14 +111,14 @@ verifies the router's TLS certificate.
 ## 4. Create a dedicated RouterOS REST user
 
 Do not use or share an administrator account. Create a dedicated user with
-read-only configuration access and the `rest-api` login policy.
+the `rest-api` login policy and the permissions needed for MMUTech's operations.
 
 ### WinBox or WebFig
 
-1. Open **System > Users > Groups** and add a group named `mmutech-readonly`.
-2. Give the group the `read` and `rest-api` policies only.
+1. Open **System > Users > Groups** and add a group named `mmutech-manager`.
+2. Give the group the `read`, `write`, and `rest-api` policies.
 3. Open **System > Users** and add a user such as `mmutech-api`.
-4. Set a strong, unique password and assign the `mmutech-readonly` group.
+4. Set a strong, unique password and assign the `mmutech-manager` group.
 5. Save the user.
 
 ### RouterOS CLI
@@ -127,14 +127,18 @@ Run as an administrator. Replace the example password with a unique secret;
 do not use this sample value:
 
 ```text
-/user/group/add name=mmutech-readonly policy=read,rest-api
-/user/add name=mmutech-api group=mmutech-readonly password="REPLACE_WITH_A_UNIQUE_PASSWORD"
+/user/group/add name=mmutech-manager policy=read,write,rest-api
+/user/add name=mmutech-api group=mmutech-manager password="REPLACE_WITH_A_UNIQUE_PASSWORD"
 ```
 
 The `rest-api` policy allows REST login; `read` allows read-only configuration
-commands. RouterOS group policies are not a per-URL allowlist, so a `read` user
-can read router configuration beyond the few endpoints MMUTech uses. Do not
-grant `write`, `policy`, or other unnecessary permissions.
+commands. MMUTech also needs `write` to set the RouterOS System Identity to the
+registered router name; create bridges and add bridge ports; and, on explicit
+request, configure LAN addressing, DHCP, NAT, and firewall rules. RouterOS
+group policies are not a per-URL allowlist: `read` and especially `write` grant
+access beyond the endpoints MMUTech uses. Do not grant `policy` or other
+unnecessary permissions. If broad `write` access is not acceptable, do not use
+these configuration features with this user.
 
 The health probe reads:
 
@@ -145,6 +149,16 @@ The health probe reads:
 
 Router profile lookup also reads `/rest/ip/hotspot/profile` when that feature is
 used.
+
+Identity synchronization writes with `PUT /rest/system/identity` and payload
+`{"name":"<registered router name>"}` after registration and when the name is
+changed in MMUTech. Scheduled health probes remain read-only.
+
+The router detail page can discover physical Ethernet interfaces and queue
+creation or reuse of a named bridge plus the selected ports. It does not change
+interface addresses, DHCP, firewall, or routing configuration. Adding a WAN or
+management interface to a bridge can interrupt access, so inspect the selected
+ports and confirm the warning before applying.
 
 ## 5. Create and install the router TLS certificate
 
@@ -269,15 +283,45 @@ skips certificate verification.
    - **Hostname or private IP**: The address prepared in step 1.
    - **REST port**: Use `443` for the standard `www-ssl` service. Use `8729`
      only if you explicitly configured `www-ssl` on that port.
-   - **RouterOS API user**: The dedicated read-only username.
+   - **RouterOS API user**: The dedicated username with `read`, `write`, and `rest-api` policies described above.
    - **RouterOS API password**: The password configured on RouterOS.
    - **TLS verification**: Keep enabled for a trusted certificate.
    - **Health monitoring**: Keep enabled for scheduled probes.
 4. Save the router.
 
 The router is stored in pending or disabled status, and the application queues
-a read-only connection test. The API password is encrypted at rest and is never
-displayed or returned in router views or audit records.
+an identity synchronization and a read-only connection test. The API password
+is encrypted at rest and is never displayed or returned in router views or
+audit records. Identity synchronization failures appear in the router's job
+history; a later name edit queues another attempt.
+
+To configure a LAN bridge, open the router detail page, discover Ethernet
+interfaces, choose only the intended LAN ports, review the WAN/management
+warning, and queue the operation. Bridge results and errors appear in Router
+jobs. The operation is safe to retry: it reuses an existing bridge and skips
+ports already attached to it.
+
+After the bridge is ready, use **DHCP, NAT & firewall** on the same page to
+configure Internet sharing. Discover interfaces and select an unbridged WAN
+Ethernet port that already has upstream IPv4 addressing and a default route;
+MMUTech does not invent upstream settings. Enter the LAN gateway address and prefix, DHCP pool range,
+upstream DNS server addresses, and management source CIDRs. These values are
+router/site-specific and are deliberately not pre-filled. Include the
+application server's actual source address or subnet in the management CIDRs;
+otherwise the WAN input filter may cut off MMUTech's RouterOS API connection.
+Management CIDRs must use a prefix from `/8` through `/32`; a broad
+`0.0.0.0/0` management allowance is rejected.
+
+The queued configuration adds the LAN IP address, DHCP pool/server/network,
+LAN-to-WAN masquerade, and stateful firewall rules. Existing configuration is
+preserved; conflicts stop the operation, and verification warns when existing
+firewall or NAT rules precede the MMUTech rules and when existing WAN ACCEPT
+rules may be shadowed. The WAN input drop may interrupt VPNs or other services
+hosted on the router. The WAN forward drop applies only
+to new, non-dstnat traffic so existing port-forwarded destinations are not
+blocked by that rule. Confirm the warning before applying. **Verify
+configuration** only reads RouterOS state; it does not test Internet
+connectivity.
 
 The registering user receives access automatically. A super administrator can
 grant access to other staff from the router detail page.
@@ -332,10 +376,13 @@ is for recurring health checks.
 
 - [ ] Router host resolves only to the configured private management CIDRs.
 - [ ] RouterOS `www-ssl` is reachable from the Laravel queue worker.
-- [ ] The API user can read the required REST endpoints and cannot write.
+- [ ] The dedicated API user can read and write as needed; its `write` policy
+      grants broad RouterOS access beyond MMUTech's documented operations.
 - [ ] The router's certificate SAN matches the registered host and its CA is
       trusted by the queue worker's PHP runtime.
 - [ ] The router appears as **Online** after the connection test.
+- [ ] Any configured LAN, DHCP, NAT, and firewall values match the site's
+      addressing plan, and the read-back verification report has been reviewed.
 - [ ] The queue worker and scheduler are running for background and recurring
       checks.
 

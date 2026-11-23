@@ -31,21 +31,27 @@ flowchart TD
     C -->|Yes| E[Save router in pending or disabled state]
     E --> F[Grant creator router access]
     F --> G[Write audit event]
-    G --> H{Manual test or scheduled sync?}
-    H -->|Manual| I[Create router job and dispatch test]
-    H -->|Scheduled| J[Select monitored routers; skip pending tests]
-    J --> I
-    I --> K[Queue worker performs read-only probe]
-    K --> L{Probe result}
-    L -->|Success| M[Update router health; save online check]
-    L -->|Failure| N[Categorize failure; update router; save failed check]
-    M --> O[Set router job succeeded]
-    N --> P[Set router job failed]
-    M --> Q[Record API/audit data as applicable]
-    N --> Q
+    G --> H[Queue RouterOS identity sync]
+    H --> I[Write registered name to System Identity]
+    G --> J{Manual test or scheduled sync?}
+    J -->|Manual| K[Create router job and dispatch test]
+    J -->|Scheduled| L[Select monitored routers; skip pending tests]
+    L --> K
+    K --> M[Queue worker performs read-only probe]
+    M --> N{Probe result}
+    N -->|Success| O[Update router health; save online check]
+    N -->|Failure| P[Categorize failure; update router; save failed check]
+    O --> Q[Set router job succeeded]
+    P --> R[Set router job failed]
+    O --> S[Record API/audit data as applicable]
+    P --> S
 ```
 
-A successful probe resets consecutive failures and stores observed router details. A failed probe marks an enabled router offline or error depending on its category; disabled and archived routers retain their status. Scheduled checks process monitored routers in batches and avoid creating a second pending connection test.
+A successful probe resets consecutive failures and stores observed router details. A failed probe marks an enabled router offline or error depending on its category; disabled and archived routers retain their status. Router name changes also queue an identity sync. Scheduled checks process monitored routers in batches and avoid creating a second pending connection test.
+
+Bridge configuration is a separate, administrator-triggered flow: discover the current Ethernet interfaces, select the intended LAN ports, explicitly confirm the management-connectivity warning, and queue a job. The worker re-reads current interfaces and bridge membership, creates the named bridge only if needed, rejects ports assigned to another bridge, and adds only the selected ports. It does not configure addressing or DHCP.
+
+LAN network configuration is another tracked flow. Administrators select a discovered, unbridged WAN interface and provide the LAN address/prefix, DHCP pool, upstream DNS servers, and management source CIDRs; the UI has no implicit network defaults. After explicit impact confirmation, the worker preflights resource conflicts, applies managed DHCP/NAT/firewall resources idempotently, and saves a RouterOS read-back report. A separate verify job only reads saved configuration state. Reports distinguish mismatches from warnings, including existing rule precedence, shadowed WAN ACCEPT rules, and missing WAN addressing/default routes.
 
 ## 3. Voucher generation, provisioning, and revocation
 

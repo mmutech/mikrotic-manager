@@ -35,7 +35,7 @@ class TestRouterConnectionJob implements ShouldQueue
     public function middleware(): array
     {
         return [
-            (new WithoutOverlapping('router-test:'.$this->routerId))->expireAfter(60)->releaseAfter(10),
+            (new WithoutOverlapping('router-management:'.$this->routerId))->expireAfter(60)->releaseAfter(10),
         ];
     }
 
