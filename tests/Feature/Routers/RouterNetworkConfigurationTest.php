@@ -97,6 +97,60 @@ class RouterNetworkConfigurationTest extends TestCase
         ]);
     }
 
+    public function test_it_generates_copyable_network_commands_without_queueing_a_router_job(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $commands = ['/ip address add address=192.168.10.1/24 interface=bridge-lan'];
+        $configurator = $this->createMock(MikrotikRouterConfigurator::class);
+        $configurator->expects($this->once())
+            ->method('terminalCommands')
+            ->with(
+                $this->callback(fn (Router $requestedRouter): bool => $requestedRouter->is($router)),
+                $this->callback(fn (array $configuration): bool => $configuration === [
+                    'bridge_name' => 'bridge-lan',
+                    'wan_interface' => 'ether1',
+                    'lan_address' => '192.168.10.1/24',
+                    'pool_start' => '192.168.10.20',
+                    'pool_end' => '192.168.10.200',
+                    'dns_servers' => ['1.1.1.1'],
+                    'management_cidrs' => ['10.20.1.15/24'],
+                    'management_impact_confirmed' => true,
+                ]),
+            )
+            ->willReturn($commands);
+        $this->app->instance(MikrotikRouterConfigurator::class, $configurator);
+        Bus::fake();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->set('lanInterfacesDiscovered', true)
+            ->set('lanInterfaces', [
+                ['name' => 'ether1', 'running' => true, 'disabled' => false, 'bridge' => null],
+                ['name' => 'ether2', 'running' => true, 'disabled' => false, 'bridge' => 'bridge-lan'],
+            ])
+            ->set('networkBridgeName', 'bridge-lan')
+            ->set('wanInterface', 'ether1')
+            ->set('lanAddress', '192.168.10.1/24')
+            ->set('poolStart', '192.168.10.20')
+            ->set('poolEnd', '192.168.10.200')
+            ->set('dnsServers', '1.1.1.1')
+            ->set('managementCidrs', '10.20.1.15/24')
+            ->set('networkImpactConfirmed', true)
+            ->call('generateNetworkCommands')
+            ->assertHasNoErrors()
+            ->assertSee($commands[0])
+            ->assertSet('networkCommands', $commands);
+
+        Bus::assertNotDispatched(ConfigureRouterNetworkJob::class);
+        $this->assertDatabaseMissing('router_jobs', [
+            'router_id' => $router->getKey(),
+            'type' => 'configure_network',
+        ]);
+    }
+
     public function test_it_queues_a_standalone_router_hotspot_user_profile(): void
     {
         $user = User::factory()->create();

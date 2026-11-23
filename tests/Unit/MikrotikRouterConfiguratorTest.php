@@ -22,6 +22,65 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $this->assertSame(['10.20.1.0/24'], $configuration['management_cidrs']);
     }
 
+    public function test_it_generates_terminal_commands_for_dhcp_nat_and_ordered_firewall_rules(): void
+    {
+        $router = new Router(['rest_port' => 8729]);
+
+        $commands = $this->configurator()->terminalCommands($router, $this->validConfiguration());
+        $firewallCommands = array_values(array_filter(
+            $commands,
+            fn (string $command): bool => str_starts_with($command, '/ip firewall filter add ')
+        ));
+
+        $this->assertSame(
+            '/ip address add address=192.168.10.1/24 interface=bridge-lan disabled=no comment="MMUTech managed LAN address"',
+            $commands[0],
+        );
+        $this->assertContains(
+            '/ip firewall nat add chain=srcnat action=masquerade src-address=192.168.10.0/24 out-interface=ether1 disabled=no comment="MMUTech managed LAN masquerade"',
+            $commands,
+        );
+        $this->assertCount(9, $firewallCommands);
+        $this->assertStringContainsString('chain=forward', $firewallCommands[0]);
+        $this->assertStringContainsString('connection-state=new', $firewallCommands[0]);
+        $this->assertStringContainsString('connection-nat-state=!dstnat', $firewallCommands[0]);
+        $this->assertStringContainsString('chain=input connection-state=established,related,untracked', $firewallCommands[8]);
+        $this->assertStringContainsString('src-address=10.20.1.0/24 protocol=tcp dst-port=8729', $firewallCommands[7]);
+        $this->assertContains('/ip firewall filter print detail', $commands);
+    }
+
+    public function test_it_requires_impact_confirmation_before_generating_terminal_commands(): void
+    {
+        $configuration = $this->validConfiguration();
+        $configuration['management_impact_confirmed'] = false;
+
+        $this->expectException(RouterProbeException::class);
+        $this->configurator()->terminalCommands(new Router(['rest_port' => 443]), $configuration);
+    }
+
+    public function test_it_quotes_routeros_interface_names_with_spaces(): void
+    {
+        $configuration = $this->validConfiguration();
+        $configuration['wan_interface'] = 'WAN uplink';
+
+        $commands = $this->configurator()->terminalCommands(new Router(['rest_port' => 443]), $configuration);
+        $natCommand = collect($commands)->first(
+            fn (string $command): bool => str_starts_with($command, '/ip firewall nat add ')
+        );
+
+        $this->assertIsString($natCommand);
+        $this->assertStringContainsString('out-interface="WAN uplink"', $natCommand);
+    }
+
+    public function test_it_rejects_control_characters_in_terminal_interface_names(): void
+    {
+        $configuration = $this->validConfiguration();
+        $configuration['wan_interface'] = "ether1\n/ip system reboot";
+
+        $this->expectException(RouterProbeException::class);
+        $this->configurator()->normalize($configuration);
+    }
+
     public function test_it_rejects_a_dhcp_pool_that_contains_the_router_address(): void
     {
         $configuration = $this->validConfiguration();

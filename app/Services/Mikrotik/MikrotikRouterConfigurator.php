@@ -76,8 +76,12 @@ class MikrotikRouterConfigurator
             throw RouterProbeException::configuration('The DHCP pool must be an ascending range of host addresses inside the LAN subnet and must not include the router address.');
         }
 
-        if (! is_string($wanInterface) || trim($wanInterface) === '') {
-            throw RouterProbeException::configuration('Select an Ethernet interface for the WAN connection.');
+        if (
+            ! is_string($wanInterface)
+            || trim($wanInterface) === ''
+            || preg_match('/[\x00-\x1F\x7F]/', $wanInterface) === 1
+        ) {
+            throw RouterProbeException::configuration('Select a valid Ethernet interface for the WAN connection.');
         }
 
         if (! is_array($dnsServers) || $dnsServers === []) {
@@ -135,6 +139,75 @@ class MikrotikRouterConfigurator
             'dns_servers' => $dnsServers,
             'management_cidrs' => $managementCidrs,
             'management_impact_confirmed' => ($configuration['management_impact_confirmed'] ?? false) === true,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $configuration
+     * @return array<int, string>
+     */
+    public function terminalCommands(Router $router, array $configuration): array
+    {
+        $configuration = $this->normalize($configuration);
+
+        if (! $configuration['management_impact_confirmed']) {
+            throw RouterProbeException::configuration('Confirm the network-impact warning before generating terminal commands.');
+        }
+
+        $commands = [
+            $this->terminalCommand('/ip address add', [
+                'address' => $configuration['lan_address'],
+                'interface' => $configuration['bridge_name'],
+                'disabled' => 'no',
+                'comment' => self::ADDRESS_COMMENT,
+            ]),
+            $this->terminalCommand('/ip pool add', [
+                'name' => 'mmutech-lan-pool',
+                'ranges' => $configuration['pool_range'],
+                'comment' => self::POOL_COMMENT,
+            ]),
+            $this->terminalCommand('/ip dhcp-server network add', [
+                'address' => $configuration['network_cidr'],
+                'gateway' => $configuration['lan_gateway'],
+                'dns-server' => implode(',', $configuration['dns_servers']),
+                'comment' => self::DHCP_NETWORK_COMMENT,
+            ]),
+            $this->terminalCommand('/ip dhcp-server add', [
+                'name' => 'mmutech-lan-dhcp',
+                'interface' => $configuration['bridge_name'],
+                'address-pool' => 'mmutech-lan-pool',
+                'lease-time' => '1d',
+                'disabled' => 'no',
+                'comment' => self::DHCP_SERVER_COMMENT,
+            ]),
+            $this->terminalCommand('/ip firewall nat add', [
+                'chain' => 'srcnat',
+                'action' => 'masquerade',
+                'src-address' => $configuration['network_cidr'],
+                'out-interface' => $configuration['wan_interface'],
+                'disabled' => 'no',
+                'comment' => self::NAT_COMMENT,
+            ]),
+        ];
+
+        foreach (array_reverse($this->firewallRules($router, $configuration)) as $rule) {
+            $commands[] = $this->terminalCommand(
+                '/ip firewall filter add',
+                array_merge($rule['settings'], [
+                    'comment' => $rule['comment'],
+                    'place-before' => '0',
+                ]),
+            );
+        }
+
+        return [
+            ...$commands,
+            '/ip address print detail',
+            '/ip pool print detail',
+            '/ip dhcp-server print detail',
+            '/ip dhcp-server network print detail',
+            '/ip firewall nat print detail',
+            '/ip firewall filter print detail',
         ];
     }
 
@@ -549,6 +622,29 @@ class MikrotikRouterConfigurator
         }
 
         return $createdId;
+    }
+
+    /**
+     * @param  array<string, string>  $settings
+     */
+    private function terminalCommand(string $path, array $settings): string
+    {
+        $arguments = [];
+
+        foreach ($settings as $key => $value) {
+            $arguments[] = $key.'='.$this->terminalValue($value);
+        }
+
+        return $path.' '.implode(' ', $arguments);
+    }
+
+    private function terminalValue(string $value): string
+    {
+        if (preg_match('~\A[A-Za-z0-9._:/,!*-]+\z~D', $value) === 1) {
+            return $value;
+        }
+
+        return '"'.str_replace(['\\', '"'], ['\\\\', '\\"'], $value).'"';
     }
 
     /**

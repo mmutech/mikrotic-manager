@@ -342,6 +342,7 @@
             <div class="space-y-5 px-5 py-5 sm:px-6">
                 @error('networkConfiguration') <p class="mm-error">{{ $message }}</p> @enderror
                 @error('networkVerification') <p class="mm-error">{{ $message }}</p> @enderror
+                @error('networkCommands') <p class="mm-error">{{ $message }}</p> @enderror
 
                 @if (! $lanInterfacesDiscovered)
                     <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Discover Ethernet interfaces above before selecting the WAN port.</p>
@@ -417,7 +418,18 @@
                         <p class="text-sm text-slate-500">Confirm the network-impact warning to continue.</p>
                     @endif
 
-                    <div class="flex justify-end">
+                    <div class="flex flex-wrap justify-end gap-3">
+                        <button
+                            type="button"
+                            class="mm-btn-secondary"
+                            wire:click="generateNetworkCommands"
+                            wire:loading.attr="disabled"
+                            wire:target="generateNetworkCommands"
+                            @disabled(! $lanInterfacesDiscovered || $networkBridgeName === '' || $wanInterface === '' || ! $networkImpactConfirmed || $pendingJob !== null)
+                        >
+                            <span wire:loading.remove wire:target="generateNetworkCommands">Generate terminal commands</span>
+                            <span wire:loading wire:target="generateNetworkCommands">Generating…</span>
+                        </button>
                         <button
                             type="submit"
                             class="mm-btn-primary"
@@ -430,6 +442,26 @@
                         </button>
                     </div>
                 </form>
+
+                @if ($networkCommands !== [])
+                    <div
+                        x-data="{ copied: false, copyFailed: false, async copyCommands() { this.copyFailed = false; try { await navigator.clipboard.writeText(this.$refs.networkSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { this.copyFailed = true; } } }"
+                        class="space-y-3 rounded-xl border border-slate-200 p-4"
+                    >
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-900">DHCP, NAT &amp; firewall terminal commands</h3>
+                                <p class="text-xs text-slate-500">Manual alternative for the values entered above; these commands do not change the router until pasted into its terminal.</p>
+                            </div>
+                            <button type="button" @click="copyCommands" class="mm-btn-secondary">
+                                <span x-text="copied ? 'Copied' : 'Copy commands'"></span>
+                            </button>
+                        </div>
+                        <p x-show="copyFailed" x-cloak role="status" class="text-xs text-red-700">Clipboard unavailable. Select and copy the commands manually.</p>
+                        <p class="text-xs leading-5 text-amber-800">These commands add new configuration and move the managed firewall rules to the top. Back up the router and review existing DHCP, NAT, and firewall rules first; repeated pastes can create duplicates or change existing policy order. The queued configuration button performs conflict checks and read-back verification.</p>
+                        <pre x-ref="networkSetupCommands" class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100"><code>{{ implode("\n", $networkCommands) }}</code></pre>
+                    </div>
+                @endif
 
                 @if ($latestNetworkJob?->status === \App\Enums\RouterJobStatus::Failed && $latestNetworkJob->error_message)
                     <p class="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">{{ $latestNetworkJob->error_message }}</p>

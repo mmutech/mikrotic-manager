@@ -17,6 +17,7 @@ use App\Services\RouterRegistryService;
 use App\Support\CorrelationContext;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
@@ -60,6 +61,9 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public bool $networkImpactConfirmed = false;
 
+    #[Locked]
+    public array $networkCommands = [];
+
     public string $hotspotProfileName = '';
 
     public string $hotspotProfileUploadSpeedKbps = '';
@@ -93,6 +97,19 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public function updated(string $property): void
     {
+        if (in_array($property, [
+            'wanInterface',
+            'networkBridgeName',
+            'lanAddress',
+            'poolStart',
+            'poolEnd',
+            'dnsServers',
+            'managementCidrs',
+            'networkImpactConfirmed',
+        ], true)) {
+            $this->networkCommands = [];
+        }
+
         if (in_array($property, [
             'wanInterface',
             'networkBridgeName',
@@ -181,6 +198,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     public function discoverLanInterfaces(RouterGateway $gateway, CorrelationContext $correlation): void
     {
         $this->authorize('update', $this->router);
+        $this->networkCommands = [];
 
         try {
             $this->lanInterfaces = $gateway->ethernetInterfaces($this->router, $correlation->id());
@@ -303,18 +321,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->resetErrorBag('wanInterface');
         $this->resetErrorBag('networkBridgeName');
 
-        $validated = $this->validate([
-            'networkBridgeName' => ['required', 'string'],
-            'wanInterface' => ['required', 'string'],
-            'lanAddress' => ['required', 'string', 'max:18'],
-            'poolStart' => ['required', 'string', 'max:15'],
-            'poolEnd' => ['required', 'string', 'max:15'],
-            'dnsServers' => ['required', 'string', 'max:500'],
-            'managementCidrs' => ['required', 'string', 'max:2000'],
-            'networkImpactConfirmed' => ['accepted'],
-        ], [
-            'networkImpactConfirmed.accepted' => 'Confirm the network-impact warning before applying changes.',
-        ]);
+        $validated = $this->validate(
+            $this->networkConfigurationRules(),
+            $this->networkConfigurationMessages(),
+        );
 
         if ($this->router->jobs()->whereIn('status', [
             RouterJobStatus::Queued->value,
@@ -357,16 +367,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             return;
         }
 
-        $configuration = [
-            'bridge_name' => $validated['networkBridgeName'],
-            'wan_interface' => $validated['wanInterface'],
-            'lan_address' => trim($validated['lanAddress']),
-            'pool_start' => trim($validated['poolStart']),
-            'pool_end' => trim($validated['poolEnd']),
-            'dns_servers' => $this->splitNetworkValues($validated['dnsServers']),
-            'management_cidrs' => $this->splitNetworkValues($validated['managementCidrs']),
-            'management_impact_confirmed' => $this->networkImpactConfirmed,
-        ];
+        $configuration = $this->networkConfigurationFromValidated($validated);
 
         try {
             $configuration = $configurator->normalize($configuration);
@@ -403,7 +404,67 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
+        $this->networkCommands = [];
         session()->flash('status', 'DHCP, NAT, and firewall configuration has been queued. Check Router jobs and the verification report.');
+    }
+
+    public function generateNetworkCommands(MikrotikRouterConfigurator $configurator): void
+    {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('networkCommands');
+        $this->networkCommands = [];
+
+        $validated = $this->validate(
+            $this->networkConfigurationRules(),
+            $this->networkConfigurationMessages(),
+        );
+
+        if (! $this->lanInterfacesDiscovered) {
+            $this->addError('networkCommands', 'Discover the router interfaces before generating terminal commands.');
+
+            return;
+        }
+
+        $availableWanInterfaces = collect($this->lanInterfaces)
+            ->filter(fn (array $interface): bool => $interface['bridge'] === null)
+            ->pluck('name')
+            ->all();
+        $availableBridgeNames = collect($this->lanInterfaces)
+            ->pluck('bridge')
+            ->filter()
+            ->unique()
+            ->all();
+
+        if (! in_array($validated['wanInterface'], $availableWanInterfaces, true)) {
+            $this->addError('networkCommands', 'Rediscover interfaces and select an unbridged Ethernet port for WAN.');
+
+            return;
+        }
+
+        if (! in_array($validated['networkBridgeName'], $availableBridgeNames, true)) {
+            $this->addError('networkCommands', 'Rediscover interfaces and select a LAN bridge with member ports.');
+
+            return;
+        }
+
+        if ($this->router->jobs()->whereIn('status', [
+            RouterJobStatus::Queued->value,
+            RouterJobStatus::Running->value,
+            RouterJobStatus::Retrying->value,
+        ])->exists()) {
+            $this->addError('networkCommands', 'Wait for the current router operation to finish before generating commands.');
+
+            return;
+        }
+
+        try {
+            $this->networkCommands = $configurator->terminalCommands(
+                $this->router,
+                $this->networkConfigurationFromValidated($validated),
+            );
+        } catch (RouterProbeException $exception) {
+            $this->addError('networkCommands', $exception->getMessage());
+        }
     }
 
     public function verifyNetwork(RouterJobService $jobs, AuditLogger $audit): void
@@ -559,6 +620,51 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             array_map('trim', preg_split('/[,\r\n]+/', $values) ?: []),
             fn (string $value): bool => $value !== ''
         ));
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    private function networkConfigurationRules(): array
+    {
+        return [
+            'networkBridgeName' => ['required', 'string'],
+            'wanInterface' => ['required', 'string'],
+            'lanAddress' => ['required', 'string', 'max:18'],
+            'poolStart' => ['required', 'string', 'max:15'],
+            'poolEnd' => ['required', 'string', 'max:15'],
+            'dnsServers' => ['required', 'string', 'max:500'],
+            'managementCidrs' => ['required', 'string', 'max:2000'],
+            'networkImpactConfirmed' => ['accepted'],
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function networkConfigurationMessages(): array
+    {
+        return [
+            'networkImpactConfirmed.accepted' => 'Confirm the network-impact warning before applying changes.',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function networkConfigurationFromValidated(array $validated): array
+    {
+        return [
+            'bridge_name' => $validated['networkBridgeName'],
+            'wan_interface' => $validated['wanInterface'],
+            'lan_address' => trim($validated['lanAddress']),
+            'pool_start' => trim($validated['poolStart']),
+            'pool_end' => trim($validated['poolEnd']),
+            'dns_servers' => $this->splitNetworkValues($validated['dnsServers']),
+            'management_cidrs' => $this->splitNetworkValues($validated['managementCidrs']),
+            'management_impact_confirmed' => $this->networkImpactConfirmed,
+        ];
     }
 
     public function toggleMonitoring(RouterRegistryService $registry): void
