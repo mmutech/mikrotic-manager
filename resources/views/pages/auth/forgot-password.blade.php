@@ -60,9 +60,13 @@ new #[Layout('layouts::auth')] #[Title('Forgot password')] class extends Compone
     </div>
 
     @if ($sent)
-        <div class="rounded-xl border border-emerald-200 bg-success-50 px-4 py-3 text-sm leading-6 text-emerald-800" role="status">
-            If an active account exists for <strong>{{ $email }}</strong>, a reset link has been sent. Check your inbox and spam folder.
-        </div>
+        @include('partials.alert-modal', [
+            'title' => 'Reset link sent',
+            'message' => 'If an active account exists for '.$email.', a reset link has been sent. Check your inbox and spam folder.',
+            'type' => 'success',
+            'open' => true,
+            'listen' => false,
+        ])
 
         <a href="{{ route('login') }}" class="mm-btn-secondary mt-6 w-full">Back to sign in</a>
     @else

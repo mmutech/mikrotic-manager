@@ -12,6 +12,7 @@ new #[Layout('layouts::app')] #[Title('Manage subscription')] class extends Comp
     public int $days = 30;
     public string $amount = '0';
     public string $plan = 'basic';
+    public bool $showDeactivateConfirmation = false;
 
     public function mount(User $user): void
     {
@@ -42,6 +43,17 @@ new #[Layout('layouts::app')] #[Title('Manage subscription')] class extends Comp
         $this->redirectRoute('subscriptions.manage', navigate: true);
     }
 
+    public function openDeactivateConfirmation(): void
+    {
+        $this->authorize('viewAny', User::class);
+        $this->showDeactivateConfirmation = true;
+    }
+
+    public function closeDeactivateConfirmation(): void
+    {
+        $this->showDeactivateConfirmation = false;
+    }
+
     public function render()
     {
         return $this->view([
@@ -63,11 +75,25 @@ new #[Layout('layouts::app')] #[Title('Manage subscription')] class extends Comp
         <div class="mm-card p-6">
             <p class="text-sm font-semibold text-slate-900">Active until {{ $subscription->expires_at->format('Y-m-d') }}</p>
             <p class="mt-1 text-sm text-slate-600">{{ $subscription->daysRemaining() }} days remaining · {{ $subscription->plan }}</p>
-            <button wire:click="deactivate" wire:confirm="Deactivate this subscription?" class="mm-btn-danger mt-4">Deactivate</button>
+            <button wire:click="openDeactivateConfirmation" class="mm-btn-danger mt-4">Deactivate</button>
         </div>
     @else
         <div class="mm-card p-6">
             <p class="text-sm text-slate-600">No active subscription.</p>
+        </div>
+    @endif
+
+    @if ($showDeactivateConfirmation)
+        <div class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="deactivate-subscription-title">
+            <button type="button" class="absolute inset-0 h-full w-full cursor-default" wire:click="closeDeactivateConfirmation" aria-label="Cancel deactivation"></button>
+            <div class="relative z-10 w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-6">
+                <h2 id="deactivate-subscription-title" class="text-lg font-semibold text-slate-900">Deactivate subscription?</h2>
+                <p class="mt-3 text-sm leading-6 text-slate-600">This subscription will stop being active immediately.</p>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button type="button" wire:click="closeDeactivateConfirmation" class="mm-btn-secondary">Cancel</button>
+                    <button type="button" wire:click="deactivate" wire:loading.attr="disabled" class="mm-btn-danger">Deactivate</button>
+                </div>
+            </div>
         </div>
     @endif
 

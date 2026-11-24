@@ -7,18 +7,19 @@ use App\Models\Router;
 use App\Services\Mikrotik\MikrotikRouterGateway;
 use App\Services\RouterApiRecorder;
 use App\Services\RouterConnectionFactory;
+use App\Support\HotspotServerConfiguration;
 use Mivo\MikrotikRos7\Client;
 use PHPUnit\Framework\TestCase;
 
 class MikrotikRouterGatewayTest extends TestCase
 {
-    public function test_it_writes_the_registered_name_as_the_routeros_identity(): void
+    public function test_it_writes_the_requested_routeros_identity(): void
     {
         $router = new Router(['name' => 'Branch Router']);
         $client = $this->createMock(Client::class);
         $client->expects($this->once())
-            ->method('put')
-            ->with('/rest/system/identity', ['name' => 'Branch Router'])
+            ->method('post')
+            ->with('/rest/system/identity/set', ['name' => 'Branch Router'])
             ->willReturn([]);
 
         $connections = $this->createMock(RouterConnectionFactory::class);
@@ -32,8 +33,8 @@ class MikrotikRouterGatewayTest extends TestCase
             ->method('success')
             ->with(
                 $router,
-                'PUT',
-                '/rest/system/identity',
+                'POST',
+                '/rest/system/identity/set',
                 $this->isType('int'),
                 200,
                 ['identity_present' => true],
@@ -79,12 +80,156 @@ class MikrotikRouterGatewayTest extends TestCase
         ], $interfaces);
     }
 
+    public function test_it_discovers_current_dhcp_nat_and_firewall_configuration(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(6))
+            ->method('get')
+            ->willReturnCallback(fn (string $endpoint): array => match ($endpoint) {
+                '/rest/ip/address' => [
+                    [
+                        '.id' => '*1',
+                        'address' => '192.168.88.1/24',
+                        'interface' => 'bridge-lan',
+                        'network' => '192.168.88.0',
+                        'disabled' => 'false',
+                        'comment' => 'MMUTech managed LAN address',
+                    ],
+                ],
+                '/rest/ip/pool' => [
+                    [
+                        '.id' => '*2',
+                        'name' => 'mmutech-lan-pool',
+                        'ranges' => '192.168.88.20-192.168.88.200',
+                        'comment' => 'MMUTech managed LAN DHCP pool',
+                    ],
+                ],
+                '/rest/ip/dhcp-server/network' => [
+                    [
+                        '.id' => '*3',
+                        'address' => '192.168.88.0/24',
+                        'gateway' => '192.168.88.1',
+                        'dns-server' => '1.1.1.1,8.8.8.8',
+                        'comment' => 'MMUTech managed LAN DHCP network',
+                    ],
+                ],
+                '/rest/ip/dhcp-server' => [
+                    [
+                        '.id' => '*4',
+                        'name' => 'mmutech-lan-dhcp',
+                        'interface' => 'bridge-lan',
+                        'address-pool' => 'mmutech-lan-pool',
+                        'lease-time' => '1d',
+                        'disabled' => 'false',
+                        'comment' => 'MMUTech managed LAN DHCP server',
+                    ],
+                ],
+                '/rest/ip/firewall/nat' => [
+                    [
+                        '.id' => '*5',
+                        'chain' => 'srcnat',
+                        'action' => 'masquerade',
+                        'src-address' => '192.168.88.0/24',
+                        'out-interface' => 'ether1',
+                        'disabled' => 'false',
+                        'comment' => 'MMUTech managed LAN masquerade',
+                    ],
+                ],
+                '/rest/ip/firewall/filter' => [
+                    [
+                        '.id' => '*6',
+                        'chain' => 'input',
+                        'action' => 'accept',
+                        'src-address' => '10.0.0.0/8',
+                        'in-interface' => 'ether1',
+                        'connection-state' => 'established',
+                        'disabled' => 'false',
+                        'comment' => 'MMUTech managed firewall input established',
+                    ],
+                ],
+                default => [],
+            });
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(6))->method('success');
+
+        $discovery = (new MikrotikRouterGateway($connections, $recorder))
+            ->networkConfiguration($router, 'correlation-id');
+
+        $this->assertSame([
+            'addresses' => [
+                [
+                    'id' => '*1',
+                    'title' => '192.168.88.1/24',
+                    'detail' => 'bridge-lan · 192.168.88.0 · enabled',
+                    'comment' => 'MMUTech managed LAN address',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+            'pools' => [
+                [
+                    'id' => '*2',
+                    'title' => 'mmutech-lan-pool',
+                    'detail' => '192.168.88.20-192.168.88.200',
+                    'comment' => 'MMUTech managed LAN DHCP pool',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+            'dhcp_networks' => [
+                [
+                    'id' => '*3',
+                    'title' => '192.168.88.0/24',
+                    'detail' => 'gateway 192.168.88.1 · DNS 1.1.1.1,8.8.8.8',
+                    'comment' => 'MMUTech managed LAN DHCP network',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+            'dhcp_servers' => [
+                [
+                    'id' => '*4',
+                    'title' => 'mmutech-lan-dhcp',
+                    'detail' => 'bridge-lan · mmutech-lan-pool · lease 1d · enabled',
+                    'comment' => 'MMUTech managed LAN DHCP server',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+            'nat_rules' => [
+                [
+                    'id' => '*5',
+                    'title' => 'srcnat → masquerade',
+                    'detail' => '192.168.88.0/24 · ether1 · enabled',
+                    'comment' => 'MMUTech managed LAN masquerade',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+            'firewall_rules' => [
+                [
+                    'id' => '*6',
+                    'title' => 'input → accept',
+                    'detail' => '10.0.0.0/8 · ether1 · established · enabled',
+                    'comment' => 'MMUTech managed firewall input established',
+                    'disabled' => false,
+                    'managed' => true,
+                ],
+            ],
+        ], $discovery);
+    }
+
     public function test_it_creates_the_bridge_and_adds_only_selected_ethernet_ports(): void
     {
         $router = new Router(['name' => 'Branch Router']);
         $writes = [];
         $client = $this->createMock(Client::class);
-        $client->expects($this->exactly(2))
+        $client->expects($this->once())
             ->method('get')
             ->willReturnCallback(fn (string $endpoint): array => $endpoint === '/rest/interface'
                 ? [
@@ -223,6 +368,49 @@ class MikrotikRouterGatewayTest extends TestCase
         ], $profiles);
     }
 
+    public function test_it_enables_cookie_login_and_preserves_existing_hotspot_login_methods(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $before = [
+            ['.id' => '*1', 'name' => 'guest', 'login-by' => 'http-chap,cookie', 'http-cookie-lifetime' => '3650d 00:00:00'],
+            ['.id' => '*2', 'name' => 'staff', 'login-by' => 'mac', 'http-cookie-lifetime' => '3d'],
+        ];
+        $after = [
+            ['.id' => '*1', 'name' => 'guest', 'login-by' => 'http-chap,cookie', 'http-cookie-lifetime' => '3650d 00:00:00'],
+            ['.id' => '*2', 'name' => 'staff', 'login-by' => 'mac,http-chap,cookie', 'http-cookie-lifetime' => '3650d 00:00:00'],
+        ];
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(2))
+            ->method('get')
+            ->with('/rest/ip/hotspot/profile')
+            ->willReturnOnConsecutiveCalls($before, $after);
+
+        $patchCalls = [];
+        $client->expects($this->once())
+            ->method('patch')
+            ->willReturnCallback(function (string $endpoint, array $payload) use (&$patchCalls): array {
+                $patchCalls[] = [$endpoint, $payload];
+
+                return [];
+            });
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(3))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))
+            ->enableHotspotCookieLogin($router, 'correlation-id');
+
+        $this->assertSame([
+            ['/rest/ip/hotspot/profile/*2', [
+                'login-by' => 'mac,http-chap,cookie',
+                'http-cookie-lifetime' => '3650d',
+            ]],
+        ], $patchCalls);
+    }
+
     public function test_it_creates_and_verifies_a_standalone_hotspot_user_profile(): void
     {
         $router = new Router(['name' => 'Branch Router']);
@@ -258,6 +446,45 @@ class MikrotikRouterGatewayTest extends TestCase
             'staff-access',
             '512k/2048k',
             2,
+            'correlation-id',
+        );
+    }
+
+    public function test_it_canonicalizes_profile_rate_limits_before_creation(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(2))
+            ->method('get')
+            ->willReturnOnConsecutiveCalls(
+                [],
+                [[
+                    '.id' => '*1',
+                    'name' => 'mixed-units',
+                    'rate-limit' => '512k/2000k',
+                    'shared-users' => '1',
+                ]],
+            );
+        $client->expects($this->once())
+            ->method('put')
+            ->with('/rest/ip/hotspot/user/profile', [
+                'name' => 'mixed-units',
+                'shared-users' => '1',
+                'rate-limit' => '512k/2000k',
+            ])
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(3))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))->createHotspotUserProfile(
+            $router,
+            'mixed-units',
+            '512k/2M',
+            1,
             'correlation-id',
         );
     }
@@ -322,5 +549,147 @@ class MikrotikRouterGatewayTest extends TestCase
             1,
             'correlation-id',
         );
+    }
+
+    public function test_it_creates_and_verifies_the_managed_hotspot_server(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $configuration = [
+            'server_name' => HotspotServerConfiguration::NAME,
+            'interface' => 'bridge-lan',
+            'address_pool' => 'mmutech-lan-pool',
+            'profile' => 'default',
+        ];
+        $hotspotReads = 0;
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(4))
+            ->method('get')
+            ->willReturnCallback(function (string $endpoint) use (&$hotspotReads): array {
+                if ($endpoint === '/rest/ip/hotspot') {
+                    $hotspotReads++;
+
+                    return $hotspotReads === 1 ? [] : [[
+                        '.id' => '*1',
+                        'name' => HotspotServerConfiguration::NAME,
+                        'interface' => 'bridge-lan',
+                        'address-pool' => 'mmutech-lan-pool',
+                        'profile' => 'default',
+                        'disabled' => 'no',
+                    ]];
+                }
+
+                return match ($endpoint) {
+                    '/rest/ip/hotspot/profile' => [['name' => 'default']],
+                    '/rest/interface' => [['name' => 'bridge-lan', 'type' => 'bridge']],
+                    default => [],
+                };
+            });
+        $client->expects($this->once())
+            ->method('put')
+            ->with('/rest/ip/hotspot', [
+                'name' => HotspotServerConfiguration::NAME,
+                'interface' => 'bridge-lan',
+                'address-pool' => 'mmutech-lan-pool',
+                'profile' => 'default',
+                'disabled' => 'no',
+            ])
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(5))->method('success');
+
+        $checks = (new MikrotikRouterGateway($connections, $recorder))
+            ->configureHotspotServer($router, $configuration, 'correlation-id');
+
+        $this->assertSame(['passed', 'passed', 'passed', 'passed'], array_column($checks, 'status'));
+    }
+
+    public function test_it_updates_an_existing_managed_hotspot_server(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $hotspotReads = 0;
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(4))
+            ->method('get')
+            ->willReturnCallback(function (string $endpoint) use (&$hotspotReads): array {
+                if ($endpoint === '/rest/ip/hotspot') {
+                    $hotspotReads++;
+
+                    return [[
+                        '.id' => '*1',
+                        'name' => HotspotServerConfiguration::NAME,
+                        'interface' => 'bridge-lan',
+                        'address-pool' => $hotspotReads === 1 ? 'old-pool' : 'mmutech-lan-pool',
+                        'profile' => 'default',
+                        'disabled' => 'no',
+                    ]];
+                }
+
+                return match ($endpoint) {
+                    '/rest/ip/hotspot/profile' => [['name' => 'default']],
+                    '/rest/interface' => [['name' => 'bridge-lan', 'type' => 'bridge']],
+                    default => [],
+                };
+            });
+        $client->expects($this->never())->method('put');
+        $client->expects($this->once())
+            ->method('patch')
+            ->with('/rest/ip/hotspot/*1', $this->callback(function (array $payload): bool {
+                return $payload['address-pool'] === 'mmutech-lan-pool'
+                    && ! array_key_exists('comment', $payload);
+            }))
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(5))->method('success');
+
+        $checks = (new MikrotikRouterGateway($connections, $recorder))->configureHotspotServer($router, [
+            'server_name' => HotspotServerConfiguration::NAME,
+            'interface' => 'bridge-lan',
+            'address_pool' => 'mmutech-lan-pool',
+            'profile' => 'default',
+        ], 'correlation-id');
+
+        $this->assertSame(['passed', 'passed', 'passed', 'passed'], array_column($checks, 'status'));
+    }
+
+    public function test_it_refuses_an_unmanaged_hotspot_server_on_the_selected_interface(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->once())
+            ->method('get')
+            ->with('/rest/ip/hotspot')
+            ->willReturn([[
+                '.id' => '*5',
+                'name' => 'hotspot1',
+                'interface' => 'bridge-lan',
+                'address-pool' => 'default-dhcp',
+                'profile' => 'default',
+                'disabled' => 'no',
+            ]]);
+        $client->expects($this->never())->method('put');
+        $client->expects($this->never())->method('patch');
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->once())->method('success');
+
+        $this->expectException(RouterProbeException::class);
+
+        (new MikrotikRouterGateway($connections, $recorder))->configureHotspotServer($router, [
+            'server_name' => HotspotServerConfiguration::NAME,
+            'interface' => 'bridge-lan',
+            'address_pool' => 'mmutech-lan-pool',
+            'profile' => 'default',
+        ], 'correlation-id');
     }
 }

@@ -46,20 +46,49 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
 
         $router = Router::findOrFail($validated['router_id']);
         $plan = Plan::where('id', $validated['plan_id'])->where('router_id', $router->id)->where('is_active', true)->firstOrFail();
+        $profileMapping = $plan->profileMappings()
+            ->where('router_id', $router->id)
+            ->first();
+
+        if ($profileMapping === null) {
+            $this->addError('plan_id', 'Map this plan to an existing RouterOS HotSpot user profile before generating vouchers.');
+
+            return;
+        }
+
+        if (! $plan->is_unlimited && ($plan->data_allowance_bytes === null || $plan->data_allowance_bytes <= 0)) {
+            $this->addError('plan_id', 'A finite plan data allowance must be greater than zero bytes.');
+
+            return;
+        }
+
+        if ($plan->time_allowance_seconds !== null && $plan->time_allowance_seconds <= 0) {
+            $this->addError('plan_id', 'The plan connected-time allowance must be greater than zero seconds.');
+
+            return;
+        }
+
+        if (($plan->upload_speed_kbps === null) !== ($plan->download_speed_kbps === null)) {
+            $this->addError('plan_id', 'The plan must set both upload and download limits, or neither.');
+
+            return;
+        }
 
         $generated = 0;
         for ($i = 0; $i < $validated['quantity']; $i++) {
             $username = ($validated['prefix'] ? strtoupper($validated['prefix']).'-' : '').strtoupper(Str::random(6));
-            $password = Str::random(8);
 
             $voucher = Voucher::create([
                 'router_id' => $router->id,
                 'plan_id' => $plan->id,
+                'hotspot_profile' => $profileMapping->hotspot_profile,
                 'generated_by' => auth()->id(),
                 'username' => $username,
-                'password' => $password,
-                'data_allowance_bytes' => $plan->data_allowance_bytes,
+                'password' => $username,
+                'data_allowance_bytes' => $plan->is_unlimited ? null : $plan->data_allowance_bytes,
                 'time_allowance_seconds' => $plan->time_allowance_seconds,
+                'upload_speed_kbps' => $plan->upload_speed_kbps,
+                'download_speed_kbps' => $plan->download_speed_kbps,
                 'validity_seconds' => $plan->validity_seconds,
                 'validity_starts' => $plan->validity_starts,
                 'expiry_policy' => $plan->expiry_policy,
@@ -84,9 +113,14 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
         $plans = collect();
 
         if ($this->router_id) {
-            $plans = Plan::query()->where('is_active', true)->where('router_id', $this->router_id)->orderBy('name')->get();
+            $plans = Plan::query()
+                ->with('profileMappings')
+                ->where('is_active', true)
+                ->where('router_id', $this->router_id)
+                ->orderBy('name')
+                ->get();
         } else {
-            $plans = Plan::query()->where('is_active', true)->orderBy('name')->get();
+            $plans = Plan::query()->with('profileMappings')->where('is_active', true)->orderBy('name')->get();
         }
 
         return $this->view([
@@ -121,7 +155,10 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
             <select wire:model="plan_id" class="mm-input">
                 <option value="">Select plan</option>
                 @foreach ($plans as $p)
-                    <option value="{{ $p->id }}">{{ $p->name }} - {{ $p->currency }} {{ $p->price }}</option>
+                    <option value="{{ $p->id }}">
+                        {{ $p->name }} - {{ $p->currency }} {{ $p->price }}
+                        ({{ $p->profileMappings->first()?->hotspot_profile ?? 'profile not mapped' }})
+                    </option>
                 @endforeach
             </select>
             @error('plan_id') <p class="mm-error">{{ $message }}</p> @enderror

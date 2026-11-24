@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\ProvisioningStatus;
 use App\Enums\VoucherLifecycleStatus;
 use App\Support\HasPublicId;
+use Database\Factories\VoucherFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,12 +14,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Voucher extends Model
 {
-    /** @use HasFactory<\Database\Factories\VoucherFactory> */
+    /** @use HasFactory<VoucherFactory> */
     use HasFactory, HasPublicId;
 
     protected $fillable = [
         'router_id',
         'plan_id',
+        'hotspot_profile',
         'customer_id',
         'purchase_id',
         'generated_by',
@@ -26,6 +28,8 @@ class Voucher extends Model
         'password',
         'data_allowance_bytes',
         'time_allowance_seconds',
+        'upload_speed_kbps',
+        'download_speed_kbps',
         'validity_seconds',
         'validity_starts',
         'expiry_policy',
@@ -58,6 +62,8 @@ class Voucher extends Model
             'provisioning_status' => ProvisioningStatus::class,
             'data_allowance_bytes' => 'integer',
             'time_allowance_seconds' => 'integer',
+            'upload_speed_kbps' => 'integer',
+            'download_speed_kbps' => 'integer',
             'validity_seconds' => 'integer',
             'used_bytes' => 'integer',
             'time_used_seconds' => 'integer',
@@ -159,16 +165,56 @@ class Voucher extends Model
             return false;
         }
 
-        if ($this->isExpired() || $this->isExhausted()) {
+        return ! $this->isExpired()
+            && ! $this->isExhausted()
+            && ! $this->hasExhaustedTimeAllowance();
+    }
+
+    public function canBeProvisioned(): bool
+    {
+        if (! $this->lifecycle_status->isUsable()) {
             return false;
         }
 
-        if ($this->time_allowance_seconds !== null
-            && $this->time_used_seconds >= $this->time_allowance_seconds) {
+        return ! $this->isExpired()
+            && ! $this->isExhausted()
+            && ! $this->hasExhaustedTimeAllowance();
+    }
+
+    public function canBePrinted(): bool
+    {
+        if (! $this->lifecycle_status->isUsable()) {
             return false;
         }
 
-        return true;
+        return ! $this->isExpired()
+            && ! $this->isExhausted()
+            && ! $this->hasExhaustedTimeAllowance();
+    }
+
+    public function quotaLabel(): string
+    {
+        if ($this->data_allowance_bytes === null) {
+            return 'Unlimited data';
+        }
+
+        $bytes = max(0, (int) $this->data_allowance_bytes);
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $power = 0;
+        $value = (float) $bytes;
+
+        while ($value >= 1024 && $power < count($units) - 1) {
+            $value /= 1024;
+            $power++;
+        }
+
+        return number_format($value, $value >= 10 ? 0 : 1).' '.$units[$power];
+    }
+
+    private function hasExhaustedTimeAllowance(): bool
+    {
+        return $this->time_allowance_seconds !== null
+            && $this->time_used_seconds >= $this->time_allowance_seconds;
     }
 
     /**

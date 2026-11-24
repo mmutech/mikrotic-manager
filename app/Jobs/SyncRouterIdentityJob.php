@@ -3,10 +3,12 @@
 namespace App\Jobs;
 
 use App\Contracts\RouterGateway;
+use App\Exceptions\RouterProbeException;
 use App\Models\Router;
 use App\Models\RouterJob;
 use App\Services\RouterJobService;
 use App\Support\CorrelationContext;
+use App\Support\RouterIdentity;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -40,7 +42,11 @@ class SyncRouterIdentityJob implements ShouldQueue
     public function handle(RouterGateway $gateway, RouterJobService $jobs): void
     {
         $correlationId = app(CorrelationContext::class)->set($this->correlationId);
-        $job = RouterJob::find($this->routerJobId);
+        $job = RouterJob::query()
+            ->whereKey($this->routerJobId)
+            ->where('router_id', $this->routerId)
+            ->where('type', 'sync_identity')
+            ->first();
 
         if ($job === null || ! $job->status->isPending()) {
             return;
@@ -55,10 +61,55 @@ class SyncRouterIdentityJob implements ShouldQueue
         }
 
         $jobs->markRunning($job);
-        $gateway->setIdentity($router, $router->name, $correlationId);
+        $payload = is_array($job->payload) ? $job->payload : [];
 
-        $router->forceFill(['identity' => $router->name])->save();
-        $jobs->markSucceeded($job);
+        try {
+            $identity = RouterIdentity::normalize(
+                $payload['identity'] ?? $router->identity,
+                $router->name,
+            );
+            $payload['identity'] = $identity;
+
+            $gateway->setIdentity($router, $identity, $correlationId);
+            $probe = $gateway->probe($router, $correlationId);
+            $passed = hash_equals($identity, $probe->identity);
+
+            $payload['verification'] = [
+                'status' => $passed ? 'passed' : 'failed',
+                'expected' => $identity,
+                'actual' => $probe->identity,
+                'verified_at' => now()->toIso8601String(),
+            ];
+            $job->forceFill(['payload' => $payload])->save();
+
+            if (! $passed) {
+                $router->forceFill(['identity' => $probe->identity])->save();
+                $jobs->markFailed(
+                    $job,
+                    'RouterOS identity was applied, but read-back verification found a mismatch.',
+                    'identity_verification',
+                );
+
+                return;
+            }
+
+            $router->forceFill(['identity' => $probe->identity])->save();
+            $jobs->markSucceeded($job);
+        } catch (Throwable $exception) {
+            $payload['verification'] = [
+                'status' => 'failed',
+                'expected' => $payload['identity'] ?? null,
+                'actual' => null,
+                'verified_at' => now()->toIso8601String(),
+            ];
+            $job->forceFill(['payload' => $payload])->save();
+
+            $jobs->markFailed(
+                $job,
+                $exception,
+                $exception instanceof RouterProbeException ? $exception->category->value : null,
+            );
+        }
     }
 
     public function failed(?Throwable $exception): void
@@ -66,7 +117,11 @@ class SyncRouterIdentityJob implements ShouldQueue
         $job = RouterJob::find($this->routerJobId);
 
         if ($job !== null && ! $job->isSettled()) {
-            app(RouterJobService::class)->markFailed($job, $exception ?? 'Identity synchronization failed.');
+            app(RouterJobService::class)->markFailed(
+                $job,
+                $exception ?? 'Identity synchronization failed.',
+                $exception instanceof RouterProbeException ? $exception->category->value : null,
+            );
         }
     }
 }

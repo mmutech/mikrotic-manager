@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\ProvisioningStatus;
 use App\Models\User;
 use App\Models\Voucher;
 use App\Services\Vouchers\VoucherProvisioningService;
@@ -14,8 +15,10 @@ class RevokeVoucherJob implements ShouldQueue
     use Queueable;
 
     public int $tries = 3;
+
     /** @var array<int,int> */
     public array $backoff = [5, 15, 60];
+
     public int $timeout = 60;
 
     public function __construct(
@@ -38,5 +41,16 @@ class RevokeVoucherJob implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
+        $voucher = Voucher::find($this->voucherId);
+
+        if ($voucher && in_array($voucher->provisioning_status, [
+            ProvisioningStatus::Disabling,
+            ProvisioningStatus::Removing,
+        ], true)) {
+            $voucher->update([
+                'provisioning_status' => ProvisioningStatus::RevocationFailed,
+                'provisioning_error' => $exception?->getMessage() ?: 'Voucher revocation failed after all attempts.',
+            ]);
+        }
     }
 }

@@ -13,14 +13,16 @@ new #[Layout('layouts::app')] #[Title('Subscription')] class extends Component
         $user = auth()->user();
 
         if ($user->isSuperAdmin() || ! $user->requiresSubscription()) {
-            session()->flash('status', 'No subscription is required for your account.');
+            $this->dispatch('app-alert', title: 'Subscription not required', message: 'No subscription is required for your account.', type: 'success');
+
             return;
         }
 
         $pending = $user->subscriptions()->where('status', 'pending')->exists();
 
         if ($pending) {
-            session()->flash('status', 'You already have a pending renewal request.');
+            $this->dispatch('app-alert', title: 'Renewal already pending', message: 'You already have a pending renewal request.', type: 'warning');
+
             return;
         }
 
@@ -35,7 +37,7 @@ new #[Layout('layouts::app')] #[Title('Subscription')] class extends Component
 
         app(AuditLogger::class)->record('subscription.requested', $user, actor: $user);
 
-        session()->flash('status', 'Renewal request submitted. An administrator will activate it.');
+        $this->dispatch('app-alert', title: 'Renewal request submitted', message: 'An administrator will activate your subscription request.', type: 'success');
     }
 
     public function render()

@@ -8,6 +8,7 @@ use App\Enums\RouterJobStatus;
 use App\Enums\RouterStatus;
 use App\Enums\VoucherLifecycleStatus;
 use App\Support\HasPublicId;
+use Database\Factories\RouterFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -18,11 +19,12 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Router extends Model
 {
-    /** @use HasFactory<\Database\Factories\RouterFactory> */
+    /** @use HasFactory<RouterFactory> */
     use HasFactory, HasPublicId, SoftDeletes;
 
     protected $fillable = [
         'name',
+        'identity',
         'location',
         'site',
         'host',
@@ -175,7 +177,10 @@ class Router extends Model
             ->where('provisioning_status', ProvisioningStatus::Provisioned->value)
             ->count();
         $failed = $this->vouchers()
-            ->where('provisioning_status', ProvisioningStatus::Failed->value)
+            ->whereIn('provisioning_status', [
+                ProvisioningStatus::Failed->value,
+                ProvisioningStatus::RevocationFailed->value,
+            ])
             ->count();
 
         return "{$provisioned} provisioned, {$failed} failed";

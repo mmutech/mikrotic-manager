@@ -41,6 +41,15 @@ interface RouterGateway
     public function privateIpv4Addresses(Router $router, string $correlationId): array;
 
     /**
+     * Read the current DHCP, NAT, and firewall configuration for review.
+     *
+     * @return array<string, array<int, array{id: ?string, title: string, detail: string, comment: ?string, disabled: bool, managed: bool}>>
+     *
+     * @throws RouterProbeException
+     */
+    public function networkConfiguration(Router $router, string $correlationId): array;
+
+    /**
      * Create a bridge if needed and add the selected Ethernet interfaces.
      *
      * @param  array<int, string>  $interfaces
@@ -55,6 +64,24 @@ interface RouterGateway
     ): void;
 
     /**
+     * Read all router interfaces so a Hotspot server can be bound to a bridge or VLAN.
+     *
+     * @return array<int, array{name: string, type: string, running: bool, disabled: bool}>
+     *
+     * @throws RouterProbeException
+     */
+    public function routerInterfaces(Router $router, string $correlationId): array;
+
+    /**
+     * Read IP pools that can be assigned to a Hotspot server.
+     *
+     * @return array<int, array{name: string, ranges: ?string}>
+     *
+     * @throws RouterProbeException
+     */
+    public function ipPools(Router $router, string $correlationId): array;
+
+    /**
      * Read the configured Hotspot server profiles.
      *
      * @return array<int, array<string, mixed>>
@@ -62,6 +89,32 @@ interface RouterGateway
      * @throws RouterProbeException
      */
     public function hotspotProfiles(Router $router, string $correlationId): array;
+
+    /**
+     * Read RouterOS Hotspot servers, including whether MMUTech manages them.
+     *
+     * @return array<int, array{id: ?string, name: string, interface: ?string, address_pool: ?string, profile: ?string, disabled: bool, managed: bool}>
+     *
+     * @throws RouterProbeException
+     */
+    public function hotspotServers(Router $router, string $correlationId): array;
+
+    /**
+     * Create or update the configured HotSpot server and verify it.
+     *
+     * @param  array<string, mixed>  $configuration
+     * @return array<string, array{status: string, message: string}>
+     *
+     * @throws RouterProbeException
+     */
+    public function configureHotspotServer(Router $router, array $configuration, string $correlationId): array;
+
+    /**
+     * Enable cookie-based login on RouterOS Hotspot server profiles.
+     *
+     * @throws RouterProbeException
+     */
+    public function enableHotspotCookieLogin(Router $router, string $correlationId): void;
 
     /**
      * Read router-level Hotspot user profiles.

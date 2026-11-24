@@ -45,7 +45,12 @@ new #[Layout('layouts::app')] #[Title('Security')] class extends Component
         $audit->record('auth.password_changed', $user, metadata: ['email' => $user->email], actor: $user);
 
         $this->reset('current_password', 'password', 'password_confirmation');
-        session()->flash('status', 'Your password has been changed. Other sessions have been signed out.');
+        $this->dispatch(
+            'app-alert',
+            title: 'Password changed',
+            message: 'Your password has been changed. Other sessions have been signed out.',
+            type: 'success',
+        );
     }
 
     public function render()

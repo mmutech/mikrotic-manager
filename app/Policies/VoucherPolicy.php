@@ -9,24 +9,16 @@ class VoucherPolicy
 {
     public function viewAny(User $user): bool
     {
-        if ($user->isSuperAdmin()) {
-            return $user->can('vouchers.view');
+        if (! $user->can('vouchers.view')) {
+            return false;
         }
-        if ($user->hasRole('network-admin') || $user->hasRole('support')) {
-            return $user->can('vouchers.view') && $user->routers()->exists();
-        }
-        return $user->can('vouchers.view');
+
+        return $user->isSuperAdmin() || $user->routers()->exists();
     }
 
     public function view(User $user, Voucher $voucher): bool
     {
-        if ($user->isSuperAdmin()) {
-            return $user->can('vouchers.view');
-        }
-        if ($user->hasRole('network-admin') || $user->hasRole('support')) {
-            return $user->can('vouchers.view') && $user->canAccessRouter($voucher->router);
-        }
-        return $user->can('vouchers.view');
+        return $user->can('vouchers.view') && $this->canAccessVoucherRouter($user, $voucher);
     }
 
     public function create(User $user): bool
@@ -36,7 +28,7 @@ class VoucherPolicy
 
     public function update(User $user, Voucher $voucher): bool
     {
-        return $user->can('vouchers.generate');
+        return $user->can('vouchers.generate') && $this->canAccessVoucherRouter($user, $voucher);
     }
 
     public function delete(User $user, Voucher $voucher): bool
@@ -51,17 +43,17 @@ class VoucherPolicy
 
     public function provision(User $user, Voucher $voucher): bool
     {
-        return $user->can('vouchers.provision');
+        return $user->can('vouchers.provision') && $this->canAccessVoucherRouter($user, $voucher);
     }
 
     public function revoke(User $user, Voucher $voucher): bool
     {
-        return $user->can('vouchers.revoke');
+        return $user->can('vouchers.revoke') && $this->canAccessVoucherRouter($user, $voucher);
     }
 
     public function print(User $user, Voucher $voucher): bool
     {
-        return $user->can('vouchers.print');
+        return $user->can('vouchers.print') && $this->canAccessVoucherRouter($user, $voucher);
     }
 
     public function restore(User $user, Voucher $voucher): bool
@@ -72,5 +64,14 @@ class VoucherPolicy
     public function forceDelete(User $user, Voucher $voucher): bool
     {
         return false;
+    }
+
+    private function canAccessVoucherRouter(User $user, Voucher $voucher): bool
+    {
+        if ($user->isSuperAdmin()) {
+            return true;
+        }
+
+        return $voucher->router !== null && $user->canAccessRouter($voucher->router);
     }
 }

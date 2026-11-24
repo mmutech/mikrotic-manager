@@ -234,27 +234,63 @@
                 </header>
 
                 <main class="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-                    @if (session('status'))
-                        <div class="mb-5 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-success-50 px-4 py-3 text-sm text-emerald-800" role="status">
-                            <svg class="mt-0.5 h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                            </svg>
-                            <span>{{ session('status') }}</span>
-                        </div>
-                    @endif
-
-                    @if (session('error'))
-                        <div class="mb-5 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
-                            <svg class="mt-0.5 h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0 3.75h.008v.008H12v-.008ZM21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                            </svg>
-                            <span>{{ session('error') }}</span>
-                        </div>
-                    @endif
-
                     {{ $slot }}
                 </main>
             </div>
         </div>
+        @include('partials.alert-modal')
+        <script>
+            window.printVoucherContent = function (selector) {
+                const elements = Array.from(document.querySelectorAll(selector));
+                if (elements.length === 0) {
+                    throw new Error('No voucher content is available to print.');
+                }
+
+                const frame = document.createElement('iframe');
+                frame.title = 'Voucher print document';
+                frame.setAttribute('aria-hidden', 'true');
+                frame.style.position = 'fixed';
+                frame.style.top = '0';
+                frame.style.left = '0';
+                frame.style.width = '100vw';
+                frame.style.height = '100vh';
+                frame.style.opacity = '0';
+                frame.style.pointerEvents = 'none';
+                frame.style.zIndex = '-1';
+                frame.style.border = '0';
+
+                const content = elements.map((element) => element.outerHTML).join('');
+                frame.addEventListener('load', () => {
+                    const printWindow = frame.contentWindow;
+                    if (printWindow === null) {
+                        frame.remove();
+                        throw new Error('Unable to open the voucher print document.');
+                    }
+
+                    printWindow.addEventListener('afterprint', () => frame.remove(), { once: true });
+                    printWindow.focus();
+                    printWindow.print();
+                }, { once: true });
+                frame.srcdoc = `<!doctype html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="utf-8">
+                        <title>Wi-Fi Voucher</title>
+                        <style>
+                            * { box-sizing: border-box; }
+                            @page { margin: 10mm; }
+                            body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; }
+                            .voucher-print-sheet { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 6mm; }
+                            .voucher-print-ticket { display: block !important; break-inside: avoid; margin: 0; padding: 6mm; border: 1px solid #cbd5e1; }
+                            .voucher-print-ticket h1, .voucher-print-ticket h2 { margin: 0; font-size: 16pt; }
+                            .voucher-print-ticket p { margin: 3mm 0 0; font-size: 9pt; }
+                            .voucher-print-ticket .voucher-code { margin-top: 5mm; padding: 4mm; border: 1px solid #cbd5e1; text-align: center; font: bold 22pt monospace; }
+                        </style>
+                    </head>
+                    <body>${content}</body>
+                    </html>`;
+                document.body.appendChild(frame);
+            };
+        </script>
     </body>
 </html>

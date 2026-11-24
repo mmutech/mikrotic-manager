@@ -19,6 +19,9 @@ new #[Layout('layouts::app')] #[Title('Plan details')] class extends Component
     {
         return $this->view([
             'canUpdate' => auth()->user()->can('update', $this->plan),
+            'hotspotProfile' => $this->plan->profileMappings()
+                ->where('router_id', $this->plan->router_id)
+                ->value('hotspot_profile'),
         ])->title($this->plan->name);
     }
 };
@@ -55,6 +58,22 @@ new #[Layout('layouts::app')] #[Title('Plan details')] class extends Component
                 <div class="flex justify-between">
                     <dt class="text-sm text-slate-500">Validity</dt>
                     <dd class="text-sm text-slate-900">{{ $plan->validityLabel() ?? 'No expiry' }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-sm text-slate-500">Connected time</dt>
+                    <dd class="text-sm text-slate-900">{{ $plan->connectedTimeLabel() ?? 'No limit' }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-sm text-slate-500">HotSpot profile</dt>
+                    <dd class="text-sm font-mono text-slate-900">{{ $hotspotProfile ?? 'Not mapped' }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-sm text-slate-500">Upload / download</dt>
+                    <dd class="text-sm text-slate-900">
+                        {{ $plan->upload_speed_kbps !== null && $plan->download_speed_kbps !== null
+                            ? number_format($plan->upload_speed_kbps).' / '.number_format($plan->download_speed_kbps).' kbps'
+                            : 'No plan limit' }}
+                    </dd>
                 </div>
                 <div class="flex justify-between">
                     <dt class="text-sm text-slate-500">Status</dt>

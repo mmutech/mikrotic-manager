@@ -86,12 +86,6 @@ new #[Layout('layouts::auth')] #[Title('Sign in')] class extends Component
         <p class="mt-2 text-sm leading-6 text-slate-500">Use your administrator or staff account to continue.</p>
     </div>
 
-    @if (session('status'))
-        <div class="mb-5 rounded-xl border border-emerald-200 bg-success-50 px-3.5 py-3 text-sm text-emerald-800" role="status">
-            {{ session('status') }}
-        </div>
-    @endif
-
     <form wire:submit="login" class="space-y-5">
         <div>
             <label for="email" class="mm-label">Email address</label>

@@ -56,16 +56,32 @@
                 @endif
 
                 @if ($canEdit)
+                    <button
+                        type="button"
+                        wire:click="provisionIdentity"
+                        wire:loading.attr="disabled"
+                        wire:target="provisionIdentity"
+                        @disabled($pendingJob !== null)
+                        class="mm-btn-secondary"
+                        title="{{ $pendingJob ? 'A router operation is already queued' : 'Apply and verify the RouterOS identity' }}"
+                    >
+                        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3Z" />
+                        </svg>
+                        Provision identity
+                    </button>
+                @endif
+
+                @if ($canEdit)
                     <a href="{{ route('routers.edit', $router) }}" class="mm-btn-secondary">Edit router</a>
                 @endif
 
                 @if ($canArchive)
                     <button
                         type="button"
-                        wire:click="archive"
-                        wire:confirm="Archive {{ $router->name }}? It will be removed from active monitoring. The record is retained and can be restored by an administrator."
+                        wire:click="openArchiveConfirmation"
                         wire:loading.attr="disabled"
-                        wire:target="archive"
+                        wire:target="openArchiveConfirmation"
                         class="mm-btn-danger"
                     >
                         Archive
@@ -147,6 +163,33 @@
                 </div>
             @endif
         </section>
+
+        @if ($latestIdentityReportJob && is_array($latestIdentityReportJob->payload['verification'] ?? null))
+            @php
+                $identityVerification = $latestIdentityReportJob->payload['verification'];
+            @endphp
+            <section class="mm-card overflow-hidden xl:col-span-2" aria-labelledby="identity-verification-heading">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-4 sm:px-6">
+                    <div>
+                        <h2 id="identity-verification-heading" class="text-base font-semibold text-slate-900">Latest identity provisioning</h2>
+                        <p class="mt-0.5 text-xs text-slate-500">{{ $identityVerification['verified_at'] ?? 'Time unavailable' }} · {{ $latestIdentityReportJob->status->label() }}</p>
+                    </div>
+                    <span class="mm-badge {{ ($identityVerification['status'] ?? '') === 'passed' ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-red-50 text-red-700 ring-red-600/20' }}">
+                        {{ ($identityVerification['status'] ?? '') === 'passed' ? 'Verified' : 'Mismatch or failure' }}
+                    </span>
+                </div>
+                <dl class="grid gap-4 px-5 py-4 text-sm sm:grid-cols-2 sm:px-6">
+                    <div>
+                        <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Expected</dt>
+                        <dd class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['expected'] ?? 'Not available' }}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Read back from RouterOS</dt>
+                        <dd class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['actual'] ?? 'Not available' }}</dd>
+                    </div>
+                </dl>
+            </section>
+        @endif
 
         <section class="space-y-6">
             <div class="mm-card overflow-hidden">
@@ -343,6 +386,77 @@
                 @error('networkConfiguration') <p class="mm-error">{{ $message }}</p> @enderror
                 @error('networkVerification') <p class="mm-error">{{ $message }}</p> @enderror
                 @error('networkCommands') <p class="mm-error">{{ $message }}</p> @enderror
+                @error('networkDiscovery') <p class="mm-error">{{ $message }}</p> @enderror
+
+                <div class="rounded-xl border border-slate-200">
+                    <div class="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <h3 class="text-sm font-semibold text-slate-900">Current DHCP, NAT &amp; firewall configuration</h3>
+                            <p class="mt-0.5 text-xs text-slate-500">Read-only discovery of existing RouterOS rules. Review it before queueing changes.</p>
+                        </div>
+                        <button
+                            type="button"
+                            wire:click="discoverNetworkConfiguration"
+                            wire:loading.attr="disabled"
+                            wire:target="discoverNetworkConfiguration"
+                            class="mm-btn-secondary"
+                        >
+                            <span wire:loading.remove wire:target="discoverNetworkConfiguration">Discover settings</span>
+                            <span wire:loading wire:target="discoverNetworkConfiguration">Discovering…</span>
+                        </button>
+                    </div>
+
+                    @if ($networkConfigurationDiscovered)
+                        <div class="divide-y divide-slate-200">
+                            @foreach ([
+                                'addresses' => 'IP addresses',
+                                'pools' => 'IP pools',
+                                'dhcp_networks' => 'DHCP networks',
+                                'dhcp_servers' => 'DHCP servers',
+                                'nat_rules' => 'NAT rules',
+                                'firewall_rules' => 'Firewall filter rules',
+                            ] as $discoveryKey => $discoveryLabel)
+                                @php
+                                    $discoveryRows = $networkDiscovery[$discoveryKey] ?? [];
+                                @endphp
+                                <div class="px-4 py-3">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500">{{ $discoveryLabel }}</h4>
+                                        <span class="text-xs text-slate-400">{{ count($discoveryRows) }}</span>
+                                    </div>
+
+                                    @if ($discoveryRows === [])
+                                        <p class="mt-1 text-xs text-slate-500">None found.</p>
+                                    @else
+                                        <ul class="mt-2 divide-y divide-slate-100">
+                                            @foreach ($discoveryRows as $discoveryRow)
+                                                <li class="py-2">
+                                                    <div class="flex flex-wrap items-center gap-2">
+                                                        <span class="font-mono text-xs font-semibold text-slate-800">{{ $discoveryRow['title'] }}</span>
+                                                        @if ($discoveryRow['managed'])
+                                                            <span class="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-semibold text-brand-700">MMUTech managed</span>
+                                                        @endif
+                                                        @if ($discoveryRow['disabled'])
+                                                            <span class="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">Disabled</span>
+                                                        @endif
+                                                    </div>
+                                                    @if ($discoveryRow['detail'] !== '')
+                                                        <p class="mt-0.5 text-xs text-slate-500">{{ $discoveryRow['detail'] }}</p>
+                                                    @endif
+                                                    @if ($discoveryRow['comment'])
+                                                        <p class="mt-0.5 break-words text-xs text-slate-400">{{ $discoveryRow['comment'] }}</p>
+                                                    @endif
+                                                </li>
+                                            @endforeach
+                                        </ul>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                    @else
+                        <p class="px-4 py-3 text-sm text-slate-600">Discover the router's current DHCP, NAT, and firewall configuration before reviewing conflicts.</p>
+                    @endif
+                </div>
 
                 @if (! $lanInterfacesDiscovered)
                     <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Discover Ethernet interfaces above before selecting the WAN port.</p>
@@ -394,7 +508,7 @@
                         </div>
                         <div>
                             <label for="networkManagementCidrs" class="mm-label">Management source CIDRs</label>
-                            <textarea id="networkManagementCidrs" wire:model.live="managementCidrs" required rows="2" class="mm-input" placeholder="IPv4 CIDR(s), comma or newline separated"></textarea>
+                            <textarea id="networkManagementCidrs" wire:model.live="managementCidrs" rows="2" class="mm-input" placeholder="IPv4 CIDR(s), comma or newline separated"></textarea>
                             <p class="mm-help">Use /8 through /32 and include the MMUTech server's source network.</p>
                             @error('managementCidrs') <p class="mm-error">{{ $message }}</p> @enderror
                         </div>
@@ -445,7 +559,7 @@
 
                 @if ($networkCommands !== [])
                     <div
-                        x-data="{ copied: false, copyFailed: false, async copyCommands() { this.copyFailed = false; try { await navigator.clipboard.writeText(this.$refs.networkSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { this.copyFailed = true; } } }"
+                        x-data="{ copied: false, async copyCommands() { try { await navigator.clipboard.writeText(this.$refs.networkSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { window.dispatchEvent(new CustomEvent('app-alert', { detail: { title: 'Copy failed', message: 'Clipboard unavailable. Select and copy the commands manually.', type: 'error' } })); } } }"
                         class="space-y-3 rounded-xl border border-slate-200 p-4"
                     >
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -457,14 +571,19 @@
                                 <span x-text="copied ? 'Copied' : 'Copy commands'"></span>
                             </button>
                         </div>
-                        <p x-show="copyFailed" x-cloak role="status" class="text-xs text-red-700">Clipboard unavailable. Select and copy the commands manually.</p>
                         <p class="text-xs leading-5 text-amber-800">These commands add new configuration and move the managed firewall rules to the top. Back up the router and review existing DHCP, NAT, and firewall rules first; repeated pastes can create duplicates or change existing policy order. The queued configuration button performs conflict checks and read-back verification.</p>
                         <pre x-ref="networkSetupCommands" class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100"><code>{{ implode("\n", $networkCommands) }}</code></pre>
                     </div>
                 @endif
 
                 @if ($latestNetworkJob?->status === \App\Enums\RouterJobStatus::Failed && $latestNetworkJob->error_message)
-                    <p class="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">{{ $latestNetworkJob->error_message }}</p>
+                    @include('partials.alert-modal', [
+                        'title' => 'Router configuration failed',
+                        'message' => $latestNetworkJob->error_message,
+                        'type' => 'error',
+                        'open' => $showNetworkFailureAlert,
+                        'listen' => false,
+                    ])
                 @endif
 
                 @if ($latestNetworkReportJob)
@@ -522,14 +641,211 @@
     @endif
 
     @if ($canEdit)
+        <section class="mm-card overflow-hidden" aria-labelledby="hotspot-server-heading">
+            <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
+                <h2 id="hotspot-server-heading" class="text-base font-semibold text-slate-900">HotSpot server</h2>
+                <p class="mt-1 text-sm text-slate-500">Create or update the RouterOS HotSpot server on a LAN interface. A server with the same name on the selected interface is updated; other existing servers are left unchanged.</p>
+            </div>
+
+            <div class="space-y-5 px-5 py-5 sm:px-6">
+                @error('hotspotServerDiscovery') <p class="mm-error">{{ $message }}</p> @enderror
+                @error('hotspotServerConfiguration') <p class="mm-error">{{ $message }}</p> @enderror
+                @error('hotspotServerCommands') <p class="mm-error">{{ $message }}</p> @enderror
+
+                <div class="flex flex-col gap-3 rounded-xl border border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-slate-900">Router HotSpot settings</h3>
+                        <p class="mt-1 text-xs text-slate-500">Read interfaces, IP pools, server profiles, and existing HotSpot servers from RouterOS.</p>
+                    </div>
+                    <button
+                        type="button"
+                        wire:click="discoverHotspotServerSettings"
+                        wire:loading.attr="disabled"
+                        wire:target="discoverHotspotServerSettings"
+                        class="mm-btn-secondary shrink-0"
+                    >
+                        <span wire:loading.remove wire:target="discoverHotspotServerSettings">Discover settings</span>
+                        <span wire:loading wire:target="discoverHotspotServerSettings">Discovering…</span>
+                    </button>
+                </div>
+
+                @if ($hotspotServers !== [])
+                    <div class="overflow-hidden rounded-xl border border-slate-200">
+                        <div class="border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+                            <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-600">Existing HotSpot servers</h3>
+                        </div>
+                        @foreach ($hotspotServers as $server)
+                            <div class="flex flex-col gap-1 border-b border-slate-100 px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+                                <div class="min-w-0">
+                                    <span class="font-mono text-sm text-slate-900">{{ $server['name'] }}</span>
+                                    @if ($server['name'] === $hotspotServerName)
+                                        <span class="mm-badge ml-2 bg-brand-50 text-brand-700 ring-brand-600/20">Selected</span>
+                                    @endif
+                                </div>
+                                <span class="text-xs text-slate-500">
+                                    {{ $server['interface'] ?? 'no interface' }} · {{ $server['address_pool'] ?? 'no pool' }} · {{ $server['profile'] ?? 'no profile' }}{{ $server['disabled'] ? ' · disabled' : '' }}
+                                </span>
+                            </div>
+                        @endforeach
+                    </div>
+                @endif
+
+                @if (! $hotspotServerDiscovered)
+                    <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Discover router settings above before configuring the HotSpot server.</p>
+                @else
+                    <form class="space-y-5">
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div>
+                                <label for="hotspotServerName" class="mm-label">Server name</label>
+                                <input id="hotspotServerName" type="text" wire:model="hotspotServerName" maxlength="64" required class="mm-input">
+                                @error('hotspotServerName') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspotServerInterface" class="mm-label">Interface</label>
+                                <select id="hotspotServerInterface" wire:model="hotspotServerInterface" required class="mm-input">
+                                    <option value="">Select a router interface</option>
+                                    @foreach ($hotspotServerInterfaces as $interface)
+                                        <option value="{{ $interface['name'] }}">
+                                            {{ $interface['name'] }} · {{ $interface['type'] ?: 'unknown' }}{{ $interface['running'] ? ' · link up' : '' }}{{ $interface['disabled'] ? ' · disabled' : '' }}
+                                        </option>
+                                    @endforeach
+                                </select>
+                                @error('hotspotServerInterface') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspotServerPool" class="mm-label">Address pool</label>
+                                <select id="hotspotServerPool" wire:model="hotspotServerPool" required class="mm-input">
+                                    <option value="">Select an IP pool</option>
+                                    @foreach ($hotspotServerPools as $pool)
+                                        <option value="{{ $pool['name'] }}">{{ $pool['name'] }}{{ $pool['ranges'] ? ' · '.$pool['ranges'] : '' }}</option>
+                                    @endforeach
+                                </select>
+                                @error('hotspotServerPool') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspotServerProfile" class="mm-label">Server profile</label>
+                                <select id="hotspotServerProfile" wire:model="hotspotServerProfile" required class="mm-input">
+                                    <option value="">Select a HotSpot server profile</option>
+                                    @foreach ($hotspotServerProfiles as $profile)
+                                        <option value="{{ $profile }}">{{ $profile }}</option>
+                                    @endforeach
+                                </select>
+                                @error('hotspotServerProfile') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                        </div>
+
+                        <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="note">
+                            <p class="font-semibold">Review the HotSpot impact before applying.</p>
+                            <p class="mt-1 text-xs leading-5">Clients on the selected interface will be redirected to the RouterOS HotSpot login page. The selected pool must have enough addresses for voucher clients, and the server profile controls login methods and cookie settings. Only a server with the same name on the selected interface will be updated; all other servers are left alone. The result is read back after the change. You will be asked to confirm before the job is queued.</p>
+                        </div>
+
+                        @if ($pendingJob)
+                            <p class="text-sm text-amber-700">Wait for the current {{ str($pendingJob->type)->replace('_', ' ') }} job to finish before configuring the HotSpot server.</p>
+                        @endif
+
+                        <div class="flex flex-wrap justify-end gap-3">
+                            <button
+                                type="button"
+                                class="mm-btn-secondary"
+                                wire:click="generateHotspotServerCommands"
+                                wire:loading.attr="disabled"
+                                wire:target="generateHotspotServerCommands"
+                            >
+                                <span wire:loading.remove wire:target="generateHotspotServerCommands">Generate terminal commands</span>
+                                <span wire:loading wire:target="generateHotspotServerCommands">Generating…</span>
+                            </button>
+                            <button
+                                type="button"
+                                class="mm-btn-primary"
+                                wire:click="openHotspotServerConfirmation"
+                                wire:loading.attr="disabled"
+                                wire:target="openHotspotServerConfirmation"
+                            >
+                                Queue HotSpot server configuration
+                            </button>
+                        </div>
+                    </form>
+
+                    @if ($hotspotServerCommands !== [])
+                        <div
+                            x-data="{ copied: false, async copyCommands() { try { await navigator.clipboard.writeText(this.$refs.hotspotServerCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { window.dispatchEvent(new CustomEvent('app-alert', { detail: { title: 'Copy failed', message: 'Clipboard unavailable. Select and copy the commands manually.', type: 'error' } })); } } }"
+                            class="space-y-3 rounded-xl border border-slate-200 p-4"
+                        >
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <h3 class="text-sm font-semibold text-slate-900">HotSpot server terminal commands</h3>
+                                    <p class="text-xs text-slate-500">Manual alternative for the values entered above; these commands do not change the router until pasted into its terminal.</p>
+                                </div>
+                                <button type="button" @click="copyCommands" class="mm-btn-secondary">
+                                    <span x-text="copied ? 'Copied' : 'Copy commands'"></span>
+                                </button>
+                            </div>
+                            <p class="text-xs leading-5 text-amber-800">Review existing HotSpot servers first. Repeated pastes can create duplicate servers; the queued configuration performs conflict checks and read-back verification.</p>
+                            <pre x-ref="hotspotServerCommands" class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100"><code>{{ implode("\n", $hotspotServerCommands) }}</code></pre>
+                        </div>
+                    @endif
+                @endif
+
+                @if ($latestHotspotJob?->status === \App\Enums\RouterJobStatus::Failed && $latestHotspotJob->error_message)
+                    @include('partials.alert-modal', [
+                        'title' => 'HotSpot configuration failed',
+                        'message' => $latestHotspotJob->error_message,
+                        'type' => 'error',
+                        'open' => $showHotspotFailureAlert,
+                        'listen' => false,
+                    ])
+                @endif
+
+                @if ($latestHotspotReportJob)
+                    <div class="rounded-xl border border-slate-200">
+                        <div class="border-b border-slate-200 px-4 py-3">
+                            <h3 class="text-sm font-semibold text-slate-900">Latest HotSpot verification</h3>
+                            <p class="text-xs text-slate-500">{{ $latestHotspotReportJob->payload['verification_at'] ?? 'Time unavailable' }} · {{ $latestHotspotReportJob->status->label() }}</p>
+                        </div>
+                        <ul class="divide-y divide-slate-100">
+                            @foreach ($latestHotspotReportJob->payload['verification'] as $name => $check)
+                                <li class="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <span class="text-sm text-slate-700">{{ str($name)->replace('_', ' ')->title() }}</span>
+                                    <span @class([
+                                        'rounded-full px-2 py-1 text-xs font-semibold',
+                                        'bg-emerald-50 text-emerald-700' => $check['status'] === 'passed',
+                                        'bg-red-50 text-red-700' => $check['status'] === 'failed',
+                                    ])>{{ $check['status'] }} — {{ $check['message'] }}</span>
+                                </li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+            </div>
+        </section>
+    @endif
+
+    @if ($canEdit)
         <section class="mm-card overflow-hidden" aria-labelledby="hotspot-profiles-heading">
             <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                 <h2 id="hotspot-profiles-heading" class="text-base font-semibold text-slate-900">Hotspot user profiles</h2>
-                <p class="mt-1 text-sm text-slate-500">Create standalone user profiles directly on this router. These profiles are not linked to plans or assigned to vouchers.</p>
+                <p class="mt-1 text-sm text-slate-500">Create user profiles on this router, then map each plan to an existing profile from the plan form. Voucher generation snapshots the selected mapping.</p>
             </div>
 
             <div class="space-y-4 px-5 py-5 sm:px-6">
-                @error('hotspotProfile') <p class="mm-error">{{ $message }}</p> @enderror
+                <div class="flex flex-col gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="max-w-2xl">
+                        <h3 class="text-sm font-semibold text-slate-900">Remember voucher logins</h3>
+                        <p class="mt-1 text-xs leading-5 text-slate-600">Enable RouterOS cookie login on this router’s HotSpot server profiles. Existing login methods stay enabled; the cookie lasts up to 3650 days, while voucher expiry still disables the router account.</p>
+                    </div>
+                    <button
+                        type="button"
+                        wire:click="openCookieLoginConfirmation"
+                        wire:loading.attr="disabled"
+                        wire:target="openCookieLoginConfirmation"
+                        class="mm-btn-secondary shrink-0"
+                        @disabled($pendingJob !== null)
+                    >
+                        <span wire:loading.remove wire:target="enableHotspotCookieLogin">Enable auto-login</span>
+                        <span wire:loading wire:target="enableHotspotCookieLogin">Queueing…</span>
+                    </button>
+                </div>
+
                 <p class="text-xs leading-5 text-slate-500">Optional rate limits are entered as upload and download kbps. Both must be set together; leave both blank for no rate cap.</p>
 
                 <form wire:submit="createRouterHotspotUserProfile" class="space-y-4 rounded-xl border border-slate-200 p-4">
@@ -583,8 +899,6 @@
                         <span wire:loading wire:target="discoverRouterHotspotUserProfiles">Refreshing…</span>
                     </button>
                 </div>
-                @error('hotspotUserProfiles') <p class="mm-error">{{ $message }}</p> @enderror
-
                 @if ($hotspotUserProfilesDiscovered)
                     <div class="overflow-hidden rounded-xl border border-slate-200">
                         @forelse ($hotspotUserProfiles as $profile)
@@ -603,7 +917,7 @@
         </section>
 
         <section
-            x-data="{ copied: false, copyFailed: false, async copyCommands() { this.copyFailed = false; try { await navigator.clipboard.writeText(this.$refs.routerSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { this.copyFailed = true; } } }"
+            x-data="{ copied: false, async copyCommands() { try { await navigator.clipboard.writeText(this.$refs.routerSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { window.dispatchEvent(new CustomEvent('app-alert', { detail: { title: 'Copy failed', message: 'Clipboard unavailable. Select and copy the commands manually.', type: 'error' } })); } } }"
             class="mm-card overflow-hidden"
             aria-labelledby="router-certificate-heading"
         >
@@ -616,7 +930,6 @@
                     <button type="button" @click="copyCommands" class="mm-btn-secondary">
                         <span x-text="copied ? 'Copied' : 'Copy commands'"></span>
                     </button>
-                    <p x-show="copyFailed" x-cloak role="status" class="mt-1 text-xs text-red-700">Clipboard unavailable. Select and copy the commands manually.</p>
                 </div>
             </div>
 
@@ -697,8 +1010,7 @@
                             @if ($canRevoke)
                                 <button
                                     type="button"
-                                    wire:click="revokeAccess({{ $member->getKey() }})"
-                                    wire:confirm="Revoke {{ $member->name }}'s access to {{ $router->name }}?"
+                                    wire:click="openRevokeAccessConfirmation({{ $member->getKey() }})"
                                     wire:loading.attr="disabled"
                                     class="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
                                 >
@@ -850,6 +1162,48 @@
                 </ul>
             @endif
         </section>
+
+        @if ($confirmationDialog !== '')
+            <div class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-label="Confirm router action">
+                <button type="button" class="absolute inset-0 h-full w-full cursor-default" wire:click="closeConfirmationDialog" aria-label="Cancel action"></button>
+                <div class="relative z-10 w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-6">
+                    <h2 class="text-lg font-semibold text-slate-900">
+                        @if ($confirmationDialog === 'archive')
+                            Archive router?
+                        @elseif ($confirmationDialog === 'cookie_login')
+                            Enable cookie-based login?
+                        @elseif ($confirmationDialog === 'hotspot_server')
+                            Configure HotSpot server?
+                        @else
+                            Revoke router access?
+                        @endif
+                    </h2>
+                    <p class="mt-3 text-sm leading-6 text-slate-600">
+                        @if ($confirmationDialog === 'archive')
+                            Archive {{ $router->name }}? It will be removed from active monitoring. The record is retained and can be restored by an administrator.
+                        @elseif ($confirmationDialog === 'cookie_login')
+                            Enable cookie-based login on all HotSpot server profiles? Existing login methods will remain enabled.
+                        @elseif ($confirmationDialog === 'hotspot_server')
+                            Create or update the HotSpot server {{ $hotspotServerName }} on {{ $hotspotServerInterface }} using {{ $hotspotServerPool }} and the {{ $hotspotServerProfile }} profile? A matching server on that interface will be updated and read back.
+                        @else
+                            Revoke {{ $router->users->firstWhere('id', $confirmationMemberId)?->name ?? 'this staff member' }}'s access to {{ $router->name }}?
+                        @endif
+                    </p>
+                    <div class="mt-6 flex justify-end gap-2">
+                        <button type="button" wire:click="closeConfirmationDialog" class="mm-btn-secondary">Cancel</button>
+                        @if ($confirmationDialog === 'archive')
+                            <button type="button" wire:click="archive" wire:loading.attr="disabled" class="mm-btn-danger">Archive</button>
+                        @elseif ($confirmationDialog === 'cookie_login')
+                            <button type="button" wire:click="enableHotspotCookieLogin" wire:loading.attr="disabled" class="mm-btn-primary">Enable auto-login</button>
+                        @elseif ($confirmationDialog === 'hotspot_server')
+                            <button type="button" wire:click="configureHotspotServer" wire:loading.attr="disabled" class="mm-btn-primary">Queue configuration</button>
+                        @else
+                            <button type="button" wire:click="revokeAccess({{ $confirmationMemberId }})" wire:loading.attr="disabled" class="mm-btn-danger">Revoke access</button>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        @endif
     </div>
 
     <section class="mm-card overflow-hidden" aria-labelledby="api-log-heading">

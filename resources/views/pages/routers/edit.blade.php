@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\RouterProbeException;
 use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
 use App\Models\Router;
@@ -7,6 +8,7 @@ use App\Rules\SafeRouterHost;
 use App\Services\AuditLogger;
 use App\Services\RouterJobService;
 use App\Services\RouterRegistryService;
+use App\Support\RouterIdentity;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
@@ -17,6 +19,8 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
     public Router $router;
 
     public string $name = '';
+
+    public string $identity = '';
 
     public string $location = '';
 
@@ -42,6 +46,7 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
 
         $this->router = $router;
         $this->name = $router->name;
+        $this->identity = (string) $router->identity;
         $this->location = (string) $router->location;
         $this->site = (string) $router->site;
         $this->host = $router->host;
@@ -64,6 +69,7 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
 
         $validated = $this->validate([
             'name' => ['required', 'string', 'max:120'],
+            'identity' => ['nullable', 'string', 'max:64', 'regex:/^[^\x00-\x1F\x7F]+$/u'],
             'location' => ['nullable', 'string', 'max:160'],
             'site' => ['nullable', 'string', 'max:80'],
             'host' => ['required', 'string', 'max:253', new SafeRouterHost],
@@ -83,26 +89,36 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
             return;
         }
 
+        try {
+            $identity = RouterIdentity::normalize($validated['identity'] ?? null, $validated['name']);
+        } catch (RouterProbeException $exception) {
+            $this->addError('identity', $exception->getMessage());
+
+            return;
+        }
+
         /** @var \App\Models\User $actor */
         $actor = auth()->user();
-        $nameChanged = trim($validated['name']) !== $this->router->name;
+        $identityChanged = $identity !== (string) $this->router->identity;
         $endpointChanged = $validated['host'] !== $originalHost || (int) $validated['rest_port'] !== $originalPort;
         $passwordChanged = filled($validated['api_password'] ?? null);
+        $validated['identity'] = $identity;
 
         $registry->update($this->router, $validated, $actor);
 
-        if ($nameChanged) {
+        if ($identityChanged) {
             $identityJob = $jobs->create(
                 router: $this->router,
                 type: 'sync_identity',
                 actor: $actor,
-                idempotencyKey: 'router-identity:'.$this->router->getKey().':'.hash('sha256', $this->router->name),
+                payload: ['identity' => $identity],
+                idempotencyKey: 'router-identity:'.$this->router->getKey().':'.hash('sha256', $identity),
             );
 
             $audit->record(
                 'router.identity_sync_queued',
                 $this->router,
-                metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_update'],
+                metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_update', 'identity' => $identity],
                 actor: $actor,
             );
 
@@ -135,10 +151,10 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
                 correlationId: $job->correlation_id,
             )->afterCommit();
 
-            session()->flash('status', $nameChanged
+            session()->flash('status', $identityChanged
                 ? 'Router updated. Its RouterOS identity sync and a read-only connection test have been queued.'
                 : 'Router updated. A read-only connection test has been queued.');
-        } elseif ($nameChanged) {
+        } elseif ($identityChanged) {
             session()->flash('status', 'Router updated. Its RouterOS identity sync has been queued.');
         } else {
             session()->flash('status', 'Router updated.');
@@ -169,7 +185,7 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
         </a>
         <p class="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-brand-600">Network inventory</p>
         <h1 class="mt-2 text-2xl font-bold tracking-tight text-slate-900">Edit {{ $router->name }}</h1>
-        <p class="mt-1 text-sm text-slate-500">Changing the router name queues an update to its RouterOS system identity. Changing the host, port, or credentials resets stale health data and queues a fresh read-only probe.</p>
+        <p class="mt-1 text-sm text-slate-500">Changing the RouterOS identity queues a tracked provisioning job with read-back verification. Changing the host, port, or credentials resets stale health data and queues a fresh read-only probe.</p>
     </div>
 
     <form wire:submit="save" class="space-y-6">
@@ -182,6 +198,12 @@ new #[Layout('layouts::app')] #[Title('Edit router')] class extends Component
                     <label for="name" class="mm-label">Router name <span class="text-red-500">*</span></label>
                     <input id="name" type="text" wire:model="name" required maxlength="120" class="mm-input">
                     @error('name') <p class="mm-error">{{ $message }}</p> @enderror
+                </div>
+                <div class="sm:col-span-2">
+                    <label for="identity" class="mm-label">RouterOS identity</label>
+                    <input id="identity" type="text" wire:model="identity" maxlength="64" class="mm-input font-mono" placeholder="Leave blank to use the router name">
+                    @error('identity') <p class="mm-error">{{ $message }}</p> @enderror
+                    <p class="mm-help">Applied to <code>/system/identity</code> by a tracked job. RouterOS allows up to 64 characters, including spaces.</p>
                 </div>
                 <div>
                     <label for="site" class="mm-label">Site</label>

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Support\HasPublicId;
+use Database\Factories\PlanFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -13,7 +14,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Plan extends Model
 {
-    /** @use HasFactory<\Database\Factories\PlanFactory> */
+    /** @use HasFactory<PlanFactory> */
     use HasFactory, HasPublicId, SoftDeletes;
 
     protected $fillable = [
@@ -126,6 +127,25 @@ class Plan extends Model
 
         if ($seconds % 3600 === 0) {
             return ($seconds / 3600).' hour(s)';
+        }
+
+        return $seconds.' second(s)';
+    }
+
+    public function connectedTimeLabel(): ?string
+    {
+        if (! $this->time_allowance_seconds) {
+            return null;
+        }
+
+        $seconds = (int) $this->time_allowance_seconds;
+
+        if ($seconds % 3600 === 0) {
+            return ($seconds / 3600).' hour(s)';
+        }
+
+        if ($seconds % 60 === 0) {
+            return ($seconds / 60).' minute(s)';
         }
 
         return $seconds.' second(s)';

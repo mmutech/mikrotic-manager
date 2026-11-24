@@ -7,9 +7,11 @@ use App\Models\Router;
 use App\Models\RouterJob;
 use App\Services\RouterJobService;
 use App\Support\CorrelationContext;
+use App\Support\HotspotRateLimit;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use InvalidArgumentException;
 use Throwable;
 
 class CreateRouterHotspotUserProfileJob implements ShouldQueue
@@ -61,6 +63,22 @@ class CreateRouterHotspotUserProfileJob implements ShouldQueue
         $configuration = $job->payload ?? [];
         $profileName = $configuration['profile_name'] ?? null;
         $rateLimit = $configuration['rate_limit'] ?? null;
+        $rateLimit = $rateLimit === '' ? null : $rateLimit;
+
+        if ($rateLimit !== null && ! is_string($rateLimit)) {
+            $jobs->markFailed($job, 'Hotspot user profile configuration is invalid or incomplete.');
+
+            return;
+        }
+
+        try {
+            $rateLimit = HotspotRateLimit::canonical($rateLimit);
+        } catch (InvalidArgumentException) {
+            $jobs->markFailed($job, 'Hotspot user profile configuration is invalid or incomplete.');
+
+            return;
+        }
+
         $sharedUsers = $configuration['shared_users'] ?? null;
         $sharedUsers = is_int($sharedUsers) || (is_string($sharedUsers) && ctype_digit($sharedUsers))
             ? (int) $sharedUsers
@@ -69,7 +87,6 @@ class CreateRouterHotspotUserProfileJob implements ShouldQueue
         if (
             ! is_string($profileName)
             || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $profileName) !== 1
-            || ($rateLimit !== null && (! is_string($rateLimit) || preg_match('/\A[1-9]\d*k\/[1-9]\d*k\z/', $rateLimit) !== 1))
             || $sharedUsers === null
             || $sharedUsers < 1
         ) {

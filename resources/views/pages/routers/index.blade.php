@@ -27,8 +27,6 @@ new #[Layout('layouts::app')] #[Title('Routers')] class extends Component
     #[Url(except: 'name')]
     public string $sort = 'name';
 
-    public string $actionError = '';
-
     public function updatedSearch(): void
     {
         $this->resetPage();
@@ -51,20 +49,23 @@ new #[Layout('layouts::app')] #[Title('Routers')] class extends Component
 
     public function clearFilters(): void
     {
-        $this->reset('search', 'status', 'monitoring', 'sort', 'actionError');
+        $this->reset('search', 'status', 'monitoring', 'sort');
         $this->resetPage();
     }
 
     public function test(int $routerId, RouterJobService $jobs, AuditLogger $audit): void
     {
-        $this->actionError = '';
-
         $router = Router::query()->visibleTo(auth()->user())->findOrFail($routerId);
 
         $this->authorize('test', $router);
 
         if ($jobs->pendingTestExists($router)) {
-            $this->actionError = 'A connection test for '.$router->name.' is already queued or running.';
+            $this->dispatch(
+                'app-alert',
+                title: 'Connection test already queued',
+                message: 'A connection test for '.$router->name.' is already queued or running.',
+                type: 'error',
+            );
 
             return;
         }
@@ -90,7 +91,12 @@ new #[Layout('layouts::app')] #[Title('Routers')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash('status', 'A read-only connection test for '.$router->name.' has been queued.');
+        $this->dispatch(
+            'app-alert',
+            title: 'Connection test queued',
+            message: 'A read-only connection test for '.$router->name.' has been queued.',
+            type: 'success',
+        );
     }
 
     public function render()
@@ -185,12 +191,6 @@ new #[Layout('layouts::app')] #[Title('Routers')] class extends Component
             <p class="mt-2 text-2xl font-bold text-slate-900">{{ number_format($summary['monitoring']) }}</p>
         </div>
     </section>
-
-    @if ($actionError !== '')
-        <div class="rounded-2xl border border-amber-200 bg-warning-50 px-4 py-3 text-sm text-amber-800" role="alert">
-            {{ $actionError }}
-        </div>
-    @endif
 
     <section class="mm-card overflow-hidden">
         <div class="border-b border-slate-200 p-4 sm:p-5">

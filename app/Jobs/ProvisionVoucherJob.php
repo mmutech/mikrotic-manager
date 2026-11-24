@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\ProvisioningStatus;
 use App\Models\User;
 use App\Models\Voucher;
 use App\Services\Vouchers\VoucherProvisioningService;
@@ -14,8 +15,10 @@ class ProvisionVoucherJob implements ShouldQueue
     use Queueable;
 
     public int $tries = 3;
+
     /** @var array<int,int> */
     public array $backoff = [5, 15, 60];
+
     public int $timeout = 60;
 
     public function __construct(
@@ -39,8 +42,14 @@ class ProvisionVoucherJob implements ShouldQueue
     public function failed(?Throwable $exception): void
     {
         $voucher = Voucher::find($this->voucherId);
-        if ($voucher && $voucher->provisioning_status->value === 'provisioning') {
-            $voucher->update(['provisioning_status' => 'failed']);
+        if ($voucher && in_array($voucher->provisioning_status, [
+            ProvisioningStatus::Queued,
+            ProvisioningStatus::Provisioning,
+        ], true)) {
+            $voucher->update([
+                'provisioning_status' => ProvisioningStatus::Failed,
+                'provisioning_error' => $exception?->getMessage() ?: 'Voucher provisioning failed after all attempts.',
+            ]);
         }
     }
 }

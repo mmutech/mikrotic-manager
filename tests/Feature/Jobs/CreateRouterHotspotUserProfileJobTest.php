@@ -44,6 +44,34 @@ class CreateRouterHotspotUserProfileJobTest extends TestCase
         $this->assertDatabaseMissing('router_plan_profiles', ['router_id' => $router->getKey()]);
     }
 
+    public function test_it_treats_an_empty_optional_rate_limit_as_unlimited(): void
+    {
+        $router = Router::factory()->create();
+        $routerJob = $this->createRouterJob($router, [
+            'profile_name' => 'guest-access',
+            'rate_limit' => '',
+            'shared_users' => 1,
+        ]);
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->expects($this->once())
+            ->method('createHotspotUserProfile')
+            ->with(
+                $this->callback(fn (Router $configuredRouter): bool => $configuredRouter->is($router)),
+                'guest-access',
+                null,
+                1,
+                $routerJob->correlation_id,
+            );
+
+        (new CreateRouterHotspotUserProfileJob(
+            routerId: $router->getKey(),
+            routerJobId: $routerJob->getKey(),
+            correlationId: $routerJob->correlation_id,
+        ))->handle($gateway, app(RouterJobService::class));
+
+        $this->assertSame('succeeded', $routerJob->refresh()->status->value);
+    }
+
     public function test_it_fails_invalid_profile_settings_without_contacting_the_router(): void
     {
         $router = Router::factory()->create();

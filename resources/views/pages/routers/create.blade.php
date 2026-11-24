@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\RouterProbeException;
 use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
 use App\Models\Router;
@@ -8,6 +9,7 @@ use App\Rules\SafeRouterHost;
 use App\Services\AuditLogger;
 use App\Services\RouterJobService;
 use App\Services\RouterRegistryService;
+use App\Support\RouterIdentity;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
@@ -16,6 +18,8 @@ use Livewire\Component;
 new #[Layout('layouts::app')] #[Title('Register router')] class extends Component
 {
     public string $name = '';
+
+    public string $identity = '';
 
     public string $location = '';
 
@@ -54,6 +58,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
 
         $validated = $this->validate([
             'name' => ['required', 'string', 'max:120'],
+            'identity' => ['nullable', 'string', 'max:64', 'regex:/^[^\x00-\x1F\x7F]+$/u'],
             'location' => ['nullable', 'string', 'max:160'],
             'site' => ['nullable', 'string', 'max:80'],
             'host' => ['required', 'string', 'max:253', new SafeRouterHost],
@@ -75,6 +80,16 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
             return;
         }
 
+        try {
+            $identity = RouterIdentity::normalize($validated['identity'] ?? null, $validated['name']);
+        } catch (RouterProbeException $exception) {
+            $this->addError('identity', $exception->getMessage());
+
+            return;
+        }
+
+        $validated['identity'] = $identity;
+
         /** @var \App\Models\User $actor */
         $actor = auth()->user();
         $router = $registry->create($validated, $actor);
@@ -91,13 +106,14 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
             router: $router,
             type: 'sync_identity',
             actor: $actor,
-            idempotencyKey: 'router-identity:'.$router->getKey().':'.hash('sha256', $router->name),
+            payload: ['identity' => $identity],
+            idempotencyKey: 'router-identity:'.$router->getKey().':'.hash('sha256', $identity),
         );
 
         $audit->record(
             'router.identity_sync_queued',
             $router,
-            metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_create'],
+            metadata: ['job_uuid' => $identityJob->uuid, 'source' => 'router_create', 'identity' => $identity],
             actor: $actor,
         );
 
@@ -165,7 +181,7 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
         </a>
         <p class="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-brand-600">Network inventory</p>
         <h1 class="mt-2 text-2xl font-bold tracking-tight text-slate-900">Register a router</h1>
-        <p class="mt-1 text-sm text-slate-500">The router name is applied as its RouterOS system identity. A read-only connection test is also queued.</p>
+        <p class="mt-1 text-sm text-slate-500">Set the RouterOS system identity to apply to the device. A read-only connection test is also queued.</p>
     </div>
 
     <form wire:submit="save" class="space-y-6">
@@ -179,6 +195,13 @@ new #[Layout('layouts::app')] #[Title('Register router')] class extends Componen
                     <label for="name" class="mm-label">Router name <span class="text-red-500">*</span></label>
                     <input id="name" type="text" wire:model="name" required maxlength="120" class="mm-input" placeholder="e.g. Accra HQ — Core Router">
                     @error('name') <p class="mm-error">{{ $message }}</p> @enderror
+                </div>
+
+                <div class="sm:col-span-2">
+                    <label for="identity" class="mm-label">RouterOS identity</label>
+                    <input id="identity" type="text" wire:model="identity" maxlength="64" class="mm-input font-mono" placeholder="Leave blank to use the router name">
+                    @error('identity') <p class="mm-error">{{ $message }}</p> @enderror
+                    <p class="mm-help">Applied to <code>/system/identity</code> by a tracked job. RouterOS allows up to 64 characters, including spaces.</p>
                 </div>
 
                 <div>

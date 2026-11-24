@@ -4,15 +4,14 @@ namespace App\Services;
 
 use App\Exceptions\RouterProbeException;
 use App\Models\Router;
+use App\Services\Mikrotik\DetailedMikrotikClient;
 use App\Support\RouterHostPolicy;
 use Illuminate\Support\Facades\Log;
-use Mivo\LaravelMikrotikRos7\MikrotikManager;
 use Mivo\MikrotikRos7\Client;
 
 class RouterConnectionFactory
 {
     public function __construct(
-        private readonly MikrotikManager $manager,
         private readonly RouterHostPolicy $hostPolicy,
     ) {}
 
@@ -56,15 +55,18 @@ class RouterConnectionFactory
             ]);
         }
 
-        return $this->manager->connection([
-            'host' => $router->host,
-            'username' => $router->api_username,
-            'password' => $router->api_password,
-            'port' => (int) $router->rest_port,
-            'verify_ssl' => $verifyTls,
-            'timeout' => (int) config('mikrotik.connect_timeout', 8),
-            'debug' => false,
-        ]);
+        $client = new DetailedMikrotikClient;
+        $client->connect(
+            $router->host,
+            $router->api_username,
+            $router->api_password,
+            (int) $router->rest_port,
+        );
+        $client->verifySsl = $verifyTls;
+        $client->timeout = (int) config('mikrotik.connect_timeout', 8);
+        $client->debug = false;
+
+        return $client;
     }
 
     private function shouldVerifyTls(Router $router): bool

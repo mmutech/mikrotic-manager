@@ -15,7 +15,7 @@ class RouterProbeException extends \RuntimeException
         parent::__construct($message, 0, $previous);
     }
 
-    public static function fromThrowable(Throwable $exception): self
+    public static function fromThrowable(Throwable $exception, ?string $routerOsDetail = null): self
     {
         $message = $exception->getMessage();
         $lower = strtolower($message);
@@ -41,6 +41,10 @@ class RouterProbeException extends \RuntimeException
             str_contains($lower, 'invalid response') => RouterErrorCategory::InvalidResponse,
             default => RouterErrorCategory::Unknown,
         };
+
+        if ($routerOsDetail !== null && $routerOsDetail !== '' && ! str_contains($message, $routerOsDetail)) {
+            $message .= ' RouterOS response: '.$routerOsDetail;
+        }
 
         return new self($message, $category, $exception);
     }

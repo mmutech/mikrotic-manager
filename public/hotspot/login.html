@@ -1,0 +1,331 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#1d4ed8">
+
+    <title>JEDC Wi-Fi | Sign In</title>
+
+    <style>
+        :root {
+            font-family: Inter, system-ui, -apple-system,
+                BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #172554;
+            background: #eff6ff;
+            font-synthesis: none;
+            text-rendering: optimizeLegibility;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+
+            background:
+                radial-gradient(
+                    ellipse at 15% 10%,
+                    rgb(191 219 254 / 75%),
+                    transparent 42%
+                ),
+                radial-gradient(
+                    ellipse at 90% 90%,
+                    rgb(199 210 254 / 65%),
+                    transparent 38%
+                ),
+                #f8fafc;
+        }
+
+        main {
+            width: min(100%, 420px);
+            padding: 36px;
+            border: 1px solid #dbeafe;
+            border-radius: 24px;
+            background: #fff;
+            box-shadow: 0 24px 64px rgb(30 64 175 / 12%);
+        }
+
+        .brand {
+            display: grid;
+            width: 52px;
+            height: 52px;
+            place-items: center;
+            margin-bottom: 24px;
+            border-radius: 16px;
+            background: #1d4ed8;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 800;
+            letter-spacing: .06em;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            color: #2563eb;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 0;
+            color: #0f172a;
+            font-size: clamp(26px, 7vw, 32px);
+            letter-spacing: -.04em;
+            line-height: 1.15;
+        }
+
+        .intro {
+            margin: 12px 0 28px;
+            color: #64748b;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .error {
+            margin: 0 0 20px;
+            padding: 14px;
+            border: 1px solid #fecaca;
+            border-radius: 12px;
+            background: #fef2f2;
+            color: #b91c1c;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        label {
+            display: block;
+            margin: 0 0 8px;
+            color: #334155;
+            font-size: 13px;
+            font-weight: 650;
+        }
+
+        input {
+            width: 100%;
+            min-height: 50px;
+            margin: 0 0 18px;
+            padding: 12px 14px;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            background: #fff;
+            color: #0f172a;
+            font: inherit;
+        }
+
+        input:focus-visible {
+            outline: 3px solid rgb(59 130 246 / 28%);
+            border-color: #2563eb;
+        }
+
+        button {
+            width: 100%;
+            min-height: 50px;
+            margin-top: 4px;
+            border: 0;
+            border-radius: 12px;
+            background: #1d4ed8;
+            color: #fff;
+            cursor: pointer;
+            font: inherit;
+            font-size: 15px;
+            font-weight: 700;
+            transition: background .2s ease;
+        }
+
+        button:hover {
+            background: #1e40af;
+        }
+
+        button:disabled {
+            cursor: wait;
+            opacity: .7;
+        }
+
+        .help {
+            margin: 22px 0 0;
+            color: #64748b;
+            font-size: 13px;
+            line-height: 1.6;
+            text-align: center;
+        }
+
+        @media (max-width: 480px) {
+            main {
+                padding: 28px 22px;
+                border-radius: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<main>
+
+    <div class="brand" aria-hidden="true">JEDC</div>
+
+    <p class="eyebrow">HQ Wi-Fi</p>
+
+    <h1>Welcome online</h1>
+
+    <p class="intro">
+        Enter your voucher code below to connect to the
+        JEDC Wi-Fi network. Your device can reconnect
+        automatically while your voucher remains valid.
+    </p>
+
+    $(if error)
+    <div class="error" role="alert">
+        <strong>Unable to connect</strong>
+        <br>
+        $(error)
+    </div>
+    $(endif)
+
+
+    <!-- MikroTik CHAP authentication form -->
+
+    $(if chap-id)
+
+    <form name="sendin"
+          action="$(link-login-only)"
+          method="post">
+
+        <input type="hidden" name="username">
+        <input type="hidden" name="password">
+
+        <input type="hidden"
+               name="dst"
+               value="$(link-orig)">
+
+        <input type="hidden"
+               name="popup"
+               value="true">
+
+    </form>
+
+    <script src="/md5.js"></script>
+
+    <script>
+        function doLogin() {
+
+            const login = document.forms.login;
+            const sendin = document.forms.sendin;
+
+            const voucher = login.username.value.trim();
+
+            if (!voucher) {
+                alert("Please enter your voucher code.");
+                return false;
+            }
+
+            if (typeof hexMD5 !== "function") {
+                alert(
+                    "Authentication script could not load. " +
+                    "Please contact support."
+                );
+                return false;
+            }
+
+            // Automatically use voucher code as password
+            const password = voucher;
+
+            // Prepare MikroTik CHAP authentication
+            sendin.username.value = voucher;
+
+            sendin.password.value = hexMD5(
+                '$(chap-id)' +
+                password +
+                '$(chap-challenge)'
+            );
+
+            // Submit authentication request
+            sendin.submit();
+
+            return false;
+        }
+    </script>
+
+    $(endif)
+
+
+    <!-- Customer login form -->
+
+    <form name="login"
+          action="$(link-login-only)"
+          method="post"
+          $(if chap-id)
+          onsubmit="return doLogin()"
+          $(else)
+          onsubmit="return setVoucherPassword()"
+          $(endif)
+    >
+
+        <input type="hidden"
+               name="dst"
+               value="$(link-orig)">
+
+        <input type="hidden"
+               name="popup"
+               value="true">
+
+        <input type="hidden"
+               id="password"
+               name="password">
+
+        <label for="username">
+            Voucher Code
+        </label>
+
+        <input
+            id="username"
+            name="username"
+            type="text"
+            value="$(username)"
+            placeholder="Enter your voucher code"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+            autofocus
+        >
+
+        <button type="submit" id="login-button">
+            Connect to Wi-Fi
+        </button>
+
+    </form>
+
+
+    <script>
+        function setVoucherPassword() {
+
+            const login = document.forms.login;
+
+            const voucher = login.username.value.trim();
+
+            login.username.value = voucher;
+            login.password.value = voucher;
+
+            return true;
+        }
+    </script>
+
+    <p class="help">
+        Need a voucher? Please ask the staff at this location.
+    </p>
+
+</main>
+
+</body>
+</html>

@@ -4,18 +4,25 @@ use App\Contracts\RouterGateway;
 use App\Enums\RouterJobStatus;
 use App\Exceptions\RouterProbeException;
 use App\Jobs\ConfigureRouterBridgeJob;
+use App\Jobs\ConfigureRouterHotspotJob;
 use App\Jobs\ConfigureRouterNetworkJob;
 use App\Jobs\CreateRouterHotspotUserProfileJob;
+use App\Jobs\EnableRouterHotspotCookieLoginJob;
+use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
 use App\Jobs\VerifyRouterNetworkJob;
 use App\Models\Router;
+use App\Models\RouterJob;
 use App\Models\User;
 use App\Services\AuditLogger;
 use App\Services\Mikrotik\MikrotikRouterConfigurator;
 use App\Services\RouterJobService;
 use App\Services\RouterRegistryService;
 use App\Support\CorrelationContext;
+use App\Support\HotspotServerConfiguration;
+use App\Support\RouterIdentity;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\In;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
@@ -63,6 +70,50 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     #[Locked]
     public array $networkCommands = [];
+
+    /** @var array<string, array<int, array{id: ?string, title: string, detail: string, comment: ?string, disabled: bool, managed: bool}>> */
+    public array $networkDiscovery = [
+        'addresses' => [],
+        'pools' => [],
+        'dhcp_networks' => [],
+        'dhcp_servers' => [],
+        'nat_rules' => [],
+        'firewall_rules' => [],
+    ];
+
+    public bool $networkConfigurationDiscovered = false;
+
+    public string $hotspotServerName = HotspotServerConfiguration::NAME;
+
+    public string $hotspotServerInterface = '';
+
+    public string $hotspotServerPool = '';
+
+    public string $hotspotServerProfile = 'default';
+
+    /** @var array<int, array{name: string, type: string, running: bool, disabled: bool}> */
+    public array $hotspotServerInterfaces = [];
+
+    /** @var array<int, array{name: string, ranges: ?string}> */
+    public array $hotspotServerPools = [];
+
+    /** @var array<int, string> */
+    public array $hotspotServerProfiles = [];
+
+    /** @var array<int, array{id: ?string, name: string, interface: ?string, address_pool: ?string, profile: ?string, disabled: bool, managed: bool}> */
+    public array $hotspotServers = [];
+
+    public bool $hotspotServerDiscovered = false;
+
+    /** @var array<int, string> */
+    #[Locked]
+    public array $hotspotServerCommands = [];
+
+    #[Locked]
+    public string $confirmationDialog = '';
+
+    #[Locked]
+    public int $confirmationMemberId = 0;
 
     public string $hotspotProfileName = '';
 
@@ -121,6 +172,15 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         ], true)) {
             $this->networkImpactConfirmed = false;
         }
+
+        if (in_array($property, [
+            'hotspotServerName',
+            'hotspotServerInterface',
+            'hotspotServerPool',
+            'hotspotServerProfile',
+        ], true)) {
+            $this->hotspotServerCommands = [];
+        }
     }
 
     public function mount(Router $router): void
@@ -129,6 +189,19 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
         $this->router = $router;
         $this->new_api_username = $router->api_username;
+
+        $networkJob = $router->jobs()
+            ->where('type', 'configure_network')
+            ->whereNotNull('payload->configuration')
+            ->latest('created_at')
+            ->first();
+        $networkConfiguration = $networkJob?->payload['configuration'] ?? [];
+        $this->hotspotServerInterface = is_string($networkConfiguration['bridge_name'] ?? null)
+            ? $networkConfiguration['bridge_name']
+            : '';
+        $this->hotspotServerPool = 'mmutech-lan-pool';
+
+        $this->markCurrentJobFailureAlertsShown();
     }
 
     public function discoverPrivateIpv4Addresses(
@@ -166,7 +239,11 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->authorize('test', $this->router);
 
         if ($jobs->pendingTestExists($this->router)) {
-            session()->flash('error', 'A connection test is already queued or running for this router.');
+            $this->dispatchAlert(
+                'Connection test already queued',
+                'A connection test is already queued or running for this router.',
+                'error',
+            );
 
             return;
         }
@@ -192,7 +269,46 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash('status', 'A read-only connection test has been queued.');
+        $this->dispatchAlert('Connection test queued', 'A read-only connection test has been queued.');
+    }
+
+    public function provisionIdentity(RouterJobService $jobs, AuditLogger $audit): void
+    {
+        $this->authorize('update', $this->router);
+
+        try {
+            $identity = RouterIdentity::normalize($this->router->identity, $this->router->name);
+        } catch (RouterProbeException $exception) {
+            $this->dispatchAlert('Identity provisioning not queued', $exception->getMessage(), 'error');
+
+            return;
+        }
+
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'sync_identity',
+            actor: auth()->user(),
+            payload: ['identity' => $identity],
+            idempotencyKey: 'router-identity:'.$this->router->getKey().':'.hash('sha256', $identity),
+        );
+
+        $audit->record(
+            'router.identity_sync_queued',
+            $this->router,
+            metadata: ['job_uuid' => $job->uuid, 'source' => 'router_detail', 'identity' => $identity],
+            actor: auth()->user(),
+        );
+
+        SyncRouterIdentityJob::dispatch(
+            routerId: $this->router->getKey(),
+            routerJobId: $job->getKey(),
+            correlationId: $job->correlation_id,
+        )->afterCommit();
+
+        $this->dispatchAlert(
+            'Identity provisioning queued',
+            'A tracked RouterOS identity job will apply '.$identity.' and verify it by read-back.',
+        );
     }
 
     public function discoverLanInterfaces(RouterGateway $gateway, CorrelationContext $correlation): void
@@ -214,6 +330,28 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             $this->lanInterfaces = [];
             $this->lanInterfacesDiscovered = false;
             $this->addError('lanInterfaces', $exception->getMessage());
+        }
+    }
+
+    public function discoverNetworkConfiguration(RouterGateway $gateway, CorrelationContext $correlation): void
+    {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('networkDiscovery');
+
+        try {
+            $this->networkDiscovery = $gateway->networkConfiguration($this->router, $correlation->id());
+            $this->networkConfigurationDiscovered = true;
+        } catch (RouterProbeException $exception) {
+            $this->networkDiscovery = [
+                'addresses' => [],
+                'pools' => [],
+                'dhcp_networks' => [],
+                'dhcp_servers' => [],
+                'nat_rules' => [],
+                'firewall_rules' => [],
+            ];
+            $this->networkConfigurationDiscovered = false;
+            $this->addError('networkDiscovery', $exception->getMessage());
         }
     }
 
@@ -303,8 +441,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash(
-            'status',
+        $this->dispatchAlert(
+            'Bridge configuration queued',
             'Bridge configuration has been queued. Check Router jobs for the result.',
         );
     }
@@ -405,7 +543,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         )->afterCommit();
 
         $this->networkCommands = [];
-        session()->flash('status', 'DHCP, NAT, and firewall configuration has been queued. Check Router jobs and the verification report.');
+        $this->dispatchAlert(
+            'Network configuration queued',
+            'DHCP, NAT, and firewall configuration has been queued. Check Router jobs and the verification report.',
+        );
     }
 
     public function generateNetworkCommands(MikrotikRouterConfigurator $configurator): void
@@ -521,7 +662,143 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash('status', 'Read-only network verification has been queued.');
+        $this->dispatchAlert('Network verification queued', 'Read-only network verification has been queued.');
+    }
+
+    public function discoverHotspotServerSettings(
+        RouterGateway $gateway,
+        CorrelationContext $correlation,
+    ): void {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('hotspotServerDiscovery');
+
+        try {
+            $this->hotspotServerInterfaces = $gateway->routerInterfaces($this->router, $correlation->id());
+            $this->hotspotServerPools = $gateway->ipPools($this->router, $correlation->id());
+            $this->hotspotServerProfiles = array_values(array_filter(array_map(
+                fn (array $profile): string => is_string($profile['name'] ?? null) ? $profile['name'] : '',
+                $gateway->hotspotProfiles($this->router, $correlation->id()),
+            )));
+            $this->hotspotServers = $gateway->hotspotServers($this->router, $correlation->id());
+            $this->hotspotServerDiscovered = true;
+        } catch (RouterProbeException $exception) {
+            $this->hotspotServerInterfaces = [];
+            $this->hotspotServerPools = [];
+            $this->hotspotServerProfiles = [];
+            $this->hotspotServers = [];
+            $this->hotspotServerDiscovered = false;
+            $this->addError('hotspotServerDiscovery', $exception->getMessage());
+
+            return;
+        }
+
+        if ($this->hotspotServerInterface === '') {
+            $bridge = collect($this->hotspotServerInterfaces)->first(
+                fn (array $interface): bool => $interface['type'] === 'bridge' && ! $interface['disabled'],
+            );
+            $this->hotspotServerInterface = $bridge['name'] ?? $this->hotspotServerInterfaces[0]['name'] ?? '';
+        }
+
+        if ($this->hotspotServerPool === '') {
+            $this->hotspotServerPool = $this->hotspotServerPools[0]['name'] ?? '';
+        }
+
+        if ($this->hotspotServerProfile === '' || ! in_array($this->hotspotServerProfile, $this->hotspotServerProfiles, true)) {
+            $this->hotspotServerProfile = $this->hotspotServerProfiles[0] ?? '';
+        }
+    }
+
+    public function openHotspotServerConfirmation(): void
+    {
+        $this->authorize('update', $this->router);
+        $this->confirmationDialog = 'hotspot_server';
+    }
+
+    public function configureHotspotServer(
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('hotspotServerConfiguration');
+
+        if (! $this->hotspotServerDiscovered) {
+            $this->addError('hotspotServerConfiguration', 'Discover the router HotSpot settings before configuring the server.');
+
+            return;
+        }
+
+        $validated = $this->validate(
+            $this->hotspotServerConfigurationRules(),
+            $this->hotspotServerConfigurationMessages(),
+        );
+
+        if ($this->router->jobs()->whereIn('status', [
+            RouterJobStatus::Queued->value,
+            RouterJobStatus::Running->value,
+            RouterJobStatus::Retrying->value,
+        ])->exists()) {
+            $this->addError('hotspotServerConfiguration', 'Wait for the current router operation to finish before configuring the HotSpot server.');
+
+            return;
+        }
+
+        $configuration = $this->hotspotServerConfigurationFromValidated($validated);
+        $configurationHash = substr(hash('sha256', json_encode($configuration, JSON_THROW_ON_ERROR)), 0, 32);
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'configure_hotspot',
+            actor: auth()->user(),
+            payload: $configuration,
+            idempotencyKey: 'router-hotspot-server:'.$this->router->getKey().':'.$configurationHash,
+        );
+
+        $audit->record(
+            'router.hotspot_server_configuration_queued',
+            $this->router,
+            metadata: [
+                'job_uuid' => $job->uuid,
+                'server_name' => $configuration['server_name'],
+                'interface' => $configuration['interface'],
+                'address_pool' => $configuration['address_pool'],
+                'profile' => $configuration['profile'],
+            ],
+            actor: auth()->user(),
+        );
+
+        ConfigureRouterHotspotJob::dispatch(
+            routerId: $this->router->getKey(),
+            routerJobId: $job->getKey(),
+            correlationId: $job->correlation_id,
+        )->afterCommit();
+
+        $this->hotspotServerCommands = [];
+        $this->closeConfirmationDialog();
+        $this->dispatchAlert(
+            'HotSpot configuration queued',
+            'RouterOS HotSpot server configuration has been queued. Check Router jobs and the verification report.',
+        );
+    }
+
+    public function generateHotspotServerCommands(): void
+    {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('hotspotServerCommands');
+        $this->hotspotServerCommands = [];
+
+        if (! $this->hotspotServerDiscovered) {
+            $this->addError('hotspotServerCommands', 'Discover the router HotSpot settings before generating terminal commands.');
+
+            return;
+        }
+
+        $validated = $this->validate(
+            $this->hotspotServerConfigurationRules(),
+            $this->hotspotServerConfigurationMessages(),
+        );
+
+        $this->hotspotServerCommands = HotspotServerConfiguration::terminalCommands(
+            $this->hotspotServerConfigurationFromValidated($validated),
+        );
     }
 
     public function discoverRouterHotspotUserProfiles(
@@ -529,7 +806,6 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         CorrelationContext $correlation,
     ): void {
         $this->authorize('update', $this->router);
-        $this->resetErrorBag('hotspotUserProfiles');
 
         try {
             $this->hotspotUserProfiles = $gateway->hotspotUserProfiles(
@@ -540,8 +816,89 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         } catch (RouterProbeException $exception) {
             $this->hotspotUserProfiles = [];
             $this->hotspotUserProfilesDiscovered = false;
-            $this->addError('hotspotUserProfiles', $exception->getMessage());
+            $this->dispatchAlert('HotSpot profiles unavailable', $exception->getMessage(), 'error');
         }
+    }
+
+    public function openArchiveConfirmation(): void
+    {
+        $this->authorize('delete', $this->router);
+        $this->confirmationDialog = 'archive';
+    }
+
+    public function openCookieLoginConfirmation(): void
+    {
+        $this->authorize('update', $this->router);
+        $this->confirmationDialog = 'cookie_login';
+    }
+
+    public function openRevokeAccessConfirmation(int $userId): void
+    {
+        $this->authorize('revokeAccess', $this->router);
+        $this->router->users()->whereKey($userId)->firstOrFail();
+        $this->confirmationMemberId = $userId;
+        $this->confirmationDialog = 'revoke_access';
+    }
+
+    public function closeConfirmationDialog(): void
+    {
+        $this->confirmationDialog = '';
+        $this->confirmationMemberId = 0;
+    }
+
+    public function enableHotspotCookieLogin(
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+
+        $pendingJobExists = $this->router->jobs()
+            ->whereIn('status', [
+                RouterJobStatus::Queued->value,
+                RouterJobStatus::Running->value,
+                RouterJobStatus::Retrying->value,
+            ])
+            ->exists();
+
+        if ($pendingJobExists) {
+            $this->closeConfirmationDialog();
+            $this->dispatchAlert(
+                'Router operation in progress',
+                'Wait for the current router operation to finish before enabling cookie-based login.',
+                'error',
+            );
+
+            return;
+        }
+
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'enable_hotspot_cookie_login',
+            actor: auth()->user(),
+            idempotencyKey: 'router-hotspot-cookie-login:'.$this->router->getKey(),
+        );
+
+        $audit->record(
+            'router.hotspot_cookie_login_queued',
+            $this->router,
+            metadata: [
+                'job_uuid' => $job->uuid,
+                'cookie_lifetime' => '3650d',
+            ],
+            actor: auth()->user(),
+        );
+
+        EnableRouterHotspotCookieLoginJob::dispatch(
+            routerId: $this->router->getKey(),
+            routerJobId: $job->getKey(),
+            correlationId: $job->correlation_id,
+        )->afterCommit();
+
+        $this->closeConfirmationDialog();
+        $this->dispatchAlert(
+            'Cookie login queued',
+            'RouterOS cookie-based HotSpot login has been queued. Voucher expiry will still disable the voucher on the router.',
+        );
     }
 
     public function createRouterHotspotUserProfile(
@@ -549,7 +906,6 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         AuditLogger $audit,
     ): void {
         $this->authorize('update', $this->router);
-        $this->resetErrorBag('hotspotProfile');
 
         $validated = $this->validate([
             'hotspotProfileName' => ['required', 'string', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/'],
@@ -567,14 +923,20 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             RouterJobStatus::Running->value,
             RouterJobStatus::Retrying->value,
         ])->exists()) {
-            $this->addError('hotspotProfile', 'Wait for the current router operation to finish before creating a Hotspot profile.');
+            $this->dispatchAlert(
+                'Router operation in progress',
+                'Wait for the current router operation to finish before creating a Hotspot profile.',
+                'error',
+            );
 
             return;
         }
 
-        $rateLimit = $validated['hotspotProfileUploadSpeedKbps'] === null
+        $uploadSpeedKbps = $validated['hotspotProfileUploadSpeedKbps'] ?? null;
+        $downloadSpeedKbps = $validated['hotspotProfileDownloadSpeedKbps'] ?? null;
+        $rateLimit = $uploadSpeedKbps === null || $uploadSpeedKbps === ''
             ? null
-            : (int) $validated['hotspotProfileUploadSpeedKbps'].'k/'.(int) $validated['hotspotProfileDownloadSpeedKbps'].'k';
+            : (int) $uploadSpeedKbps.'k/'.(int) $downloadSpeedKbps.'k';
         $configuration = [
             'profile_name' => $validated['hotspotProfileName'],
             'rate_limit' => $rateLimit,
@@ -608,7 +970,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             correlationId: $job->correlation_id,
         )->afterCommit();
 
-        session()->flash('status', 'Router-level Hotspot user profile creation has been queued.');
+        $this->dispatchAlert('HotSpot profile queued', 'Router-level Hotspot user profile creation has been queued.');
     }
 
     /**
@@ -620,6 +982,44 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             array_map('trim', preg_split('/[,\r\n]+/', $values) ?: []),
             fn (string $value): bool => $value !== ''
         ));
+    }
+
+    /**
+     * @return array<string, array<int, string|In>>
+     */
+    private function hotspotServerConfigurationRules(): array
+    {
+        return [
+            'hotspotServerName' => ['required', 'string', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/'],
+            'hotspotServerInterface' => ['required', 'string', Rule::in(array_column($this->hotspotServerInterfaces, 'name'))],
+            'hotspotServerPool' => ['required', 'string', Rule::in(array_column($this->hotspotServerPools, 'name'))],
+            'hotspotServerProfile' => ['required', 'string', Rule::in($this->hotspotServerProfiles)],
+        ];
+    }
+
+    /** @return array<string, string> */
+    private function hotspotServerConfigurationMessages(): array
+    {
+        return [
+            'hotspotServerName.regex' => 'Use 1 to 64 letters, numbers, dots, underscores, or hyphens; the name must start with a letter or number.',
+            'hotspotServerInterface.in' => 'Select an interface discovered on this router.',
+            'hotspotServerPool.in' => 'Select an IP pool discovered on this router.',
+            'hotspotServerProfile.in' => 'Select a HotSpot server profile discovered on this router.',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function hotspotServerConfigurationFromValidated(array $validated): array
+    {
+        return [
+            'server_name' => $validated['hotspotServerName'],
+            'interface' => $validated['hotspotServerInterface'],
+            'address_pool' => $validated['hotspotServerPool'],
+            'profile' => $validated['hotspotServerProfile'],
+        ];
     }
 
     /**
@@ -676,9 +1076,12 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $registry->setMonitoring($this->router, $enabled, auth()->user());
         $this->router->refresh();
 
-        session()->flash('status', $enabled
-            ? 'Health monitoring enabled. The next scheduled run will probe this router.'
-            : 'Health monitoring disabled. Existing history has been retained.');
+        $this->dispatchAlert(
+            $enabled ? 'Monitoring enabled' : 'Monitoring disabled',
+            $enabled
+                ? 'Health monitoring enabled. The next scheduled run will probe this router.'
+                : 'Health monitoring disabled. Existing history has been retained.',
+        );
     }
 
     public function grantAccess(RouterRegistryService $registry): void
@@ -702,7 +1105,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             ->findOrFail((int) $this->selectedUserId);
 
         if ($this->router->users()->whereKey($user->getKey())->exists()) {
-            session()->flash('error', $user->name.' already has access to this router.');
+            $this->dispatchAlert('Access already exists', $user->name.' already has access to this router.', 'error');
 
             return;
         }
@@ -711,7 +1114,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->router->load('users');
         $this->reset('selectedUserId');
 
-        session()->flash('status', 'Access granted to '.$user->name.'.');
+        $this->dispatchAlert('Router access granted', 'Access granted to '.$user->name.'.');
     }
 
     public function revokeAccess(int $userId, RouterRegistryService $registry): void
@@ -723,8 +1126,9 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
         $registry->revokeAccess($this->router, $user, auth()->user());
         $this->router->load('users');
+        $this->closeConfirmationDialog();
 
-        session()->flash('status', 'Access revoked for '.$user->name.'.');
+        $this->dispatchAlert('Router access revoked', 'Access revoked for '.$user->name.'.');
     }
 
     public function rotateCredentials(
@@ -765,7 +1169,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
         $this->reset('new_api_password', 'new_api_password_confirmation');
 
-        session()->flash('status', 'Router credentials rotated. A read-only test has been queued.');
+        $this->dispatchAlert(
+            'Router credentials updated',
+            'Router credentials rotated. A read-only test has been queued.',
+        );
     }
 
     public function archive(RouterRegistryService $registry): void
@@ -776,8 +1183,55 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $registry->archive($this->router, auth()->user());
 
         session()->flash('status', $name.' has been archived and removed from active monitoring.');
+        $this->closeConfirmationDialog();
 
         $this->redirectRoute('routers.index', navigate: true);
+    }
+
+    private function markCurrentJobFailureAlertsShown(): void
+    {
+        foreach ([
+            'network' => ['configure_network', 'verify_network'],
+            'hotspot' => ['configure_hotspot'],
+        ] as $key => $types) {
+            $job = $this->router->jobs()
+                ->whereIn('type', $types)
+                ->where('status', RouterJobStatus::Failed)
+                ->whereNotNull('error_message')
+                ->latest('created_at')
+                ->first();
+
+            if ($job) {
+                session()->put($this->jobFailureAlertSessionKey($key, $job), true);
+            }
+        }
+    }
+
+    private function shouldShowJobFailureAlert(string $key, ?RouterJob $job): bool
+    {
+        if (! $job || $job->status !== RouterJobStatus::Failed || ! $job->error_message) {
+            return false;
+        }
+
+        $sessionKey = $this->jobFailureAlertSessionKey($key, $job);
+
+        if (session()->has($sessionKey)) {
+            return false;
+        }
+
+        session()->put($sessionKey, true);
+
+        return true;
+    }
+
+    private function jobFailureAlertSessionKey(string $key, RouterJob $job): string
+    {
+        return 'router-job-failure-alert:'.$this->router->getKey().':'.$key.':'.$job->getKey();
+    }
+
+    private function dispatchAlert(string $title, string $message, string $type = 'success'): void
+    {
+        $this->dispatch('app-alert', title: $title, message: $message, type: $type);
     }
 
     public function render()
@@ -794,6 +1248,11 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             ])
             ->latest('created_at')
             ->first();
+        $latestIdentityReportJob = $router->jobs()
+            ->where('type', 'sync_identity')
+            ->whereNotNull('payload->verification')
+            ->latest('created_at')
+            ->first();
         $networkJobs = $router->jobs()
             ->whereIn('type', ['configure_network', 'verify_network'])
             ->latest('created_at')
@@ -808,6 +1267,17 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             ->whereNotNull('payload->configuration')
             ->latest('created_at')
             ->first();
+        $hotspotJobs = $router->jobs()
+            ->where('type', 'configure_hotspot')
+            ->latest('created_at')
+            ->limit(5)
+            ->get();
+        $latestHotspotJob = $hotspotJobs->first();
+        $latestHotspotReportJob = $hotspotJobs->first(
+            fn ($job): bool => is_array($job->payload['verification'] ?? null)
+        );
+        $showNetworkFailureAlert = $this->shouldShowJobFailureAlert('network', $latestNetworkJob);
+        $showHotspotFailureAlert = $this->shouldShowJobFailureAlert('hotspot', $latestHotspotJob);
         $staff = $user->can('grantAccess', $router)
             ? User::query()
                 ->where('status', 'active')
@@ -825,9 +1295,14 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             'canRevoke' => $user->can('revokeAccess', $router),
             'canArchive' => $user->can('delete', $router),
             'pendingJob' => $pendingJob,
+            'latestIdentityReportJob' => $latestIdentityReportJob,
             'latestNetworkJob' => $latestNetworkJob,
             'latestNetworkReportJob' => $latestNetworkReportJob,
+            'showNetworkFailureAlert' => $showNetworkFailureAlert,
             'canVerifyNetwork' => is_array($latestNetworkConfigurationJob?->payload['configuration'] ?? null),
+            'latestHotspotJob' => $latestHotspotJob,
+            'latestHotspotReportJob' => $latestHotspotReportJob,
+            'showHotspotFailureAlert' => $showHotspotFailureAlert,
             'availableBridgeNames' => collect($this->lanInterfaces)->pluck('bridge')->filter()->unique()->values(),
             'healthChecks' => $router->healthChecks()->latest('checked_at')->limit(8)->get(),
             'jobs' => $router->jobs()->latest('created_at')->limit(8)->get(),

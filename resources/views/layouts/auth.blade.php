@@ -67,5 +67,6 @@
                 </section>
             </div>
         </div>
+        @include('partials.alert-modal')
     </body>
 </html>

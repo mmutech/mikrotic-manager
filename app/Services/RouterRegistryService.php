@@ -7,6 +7,7 @@ use App\Exceptions\RouterProbeException;
 use App\Models\Router;
 use App\Models\User;
 use App\Support\RouterHostPolicy;
+use App\Support\RouterIdentity;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -88,8 +89,8 @@ class RouterRegistryService
             }
 
             if ($endpointChanged) {
-                // Identity and health data belong to the previous endpoint.
-                $router->identity = null;
+                // Health data belongs to the previous endpoint. The desired
+                // identity is provisioning configuration and is preserved.
                 $router->ros_version = null;
                 $router->board_name = null;
                 $router->latency_ms = null;
@@ -238,15 +239,26 @@ class RouterRegistryService
     private function normalise(array $data): array
     {
         $allowed = [
-            'name', 'location', 'site', 'host', 'rest_port', 'api_username',
+            'name', 'identity', 'location', 'site', 'host', 'rest_port', 'api_username',
             'api_password', 'tls_verify', 'monitoring_enabled', 'notes',
         ];
 
         $data = array_intersect_key($data, array_flip($allowed));
 
-        foreach (['name', 'location', 'site', 'host', 'api_username', 'notes'] as $key) {
+        foreach (['name', 'identity', 'location', 'site', 'host', 'api_username', 'notes'] as $key) {
             if (array_key_exists($key, $data) && is_string($data[$key])) {
                 $data[$key] = trim($data[$key]);
+            }
+        }
+
+        if (array_key_exists('identity', $data)) {
+            try {
+                $data['identity'] = RouterIdentity::normalize(
+                    $data['identity'],
+                    (string) ($data['name'] ?? ''),
+                );
+            } catch (RouterProbeException $exception) {
+                throw ValidationException::withMessages(['identity' => $exception->getMessage()]);
             }
         }
 

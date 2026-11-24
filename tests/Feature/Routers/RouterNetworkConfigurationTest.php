@@ -5,7 +5,9 @@ namespace Tests\Feature\Routers;
 use App\Contracts\RouterGateway;
 use App\Jobs\ConfigureRouterNetworkJob;
 use App\Jobs\CreateRouterHotspotUserProfileJob;
+use App\Jobs\EnableRouterHotspotCookieLoginJob;
 use App\Models\Router;
+use App\Models\RouterJob;
 use App\Models\User;
 use App\Services\Mikrotik\MikrotikRouterConfigurator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -151,6 +153,61 @@ class RouterNetworkConfigurationTest extends TestCase
         ]);
     }
 
+    public function test_it_discovers_current_dhcp_nat_and_firewall_configuration(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->expects($this->once())
+            ->method('networkConfiguration')
+            ->with(
+                $this->callback(fn (Router $requestedRouter): bool => $requestedRouter->is($router)),
+                $this->isType('string'),
+            )
+            ->willReturn([
+                'addresses' => [[
+                    'id' => '*1',
+                    'title' => '192.168.88.1/24',
+                    'detail' => 'bridge-lan · enabled',
+                    'comment' => 'MMUTech managed LAN address',
+                    'disabled' => false,
+                    'managed' => true,
+                ]],
+                'pools' => [],
+                'dhcp_networks' => [],
+                'dhcp_servers' => [[
+                    'id' => '*2',
+                    'title' => 'mmutech-lan-dhcp',
+                    'detail' => 'bridge-lan · mmutech-lan-pool · enabled',
+                    'comment' => 'MMUTech managed LAN DHCP server',
+                    'disabled' => false,
+                    'managed' => true,
+                ]],
+                'nat_rules' => [[
+                    'id' => '*3',
+                    'title' => 'srcnat → masquerade',
+                    'detail' => '192.168.88.0/24 · ether1 · enabled',
+                    'comment' => 'MMUTech managed LAN masquerade',
+                    'disabled' => false,
+                    'managed' => true,
+                ]],
+                'firewall_rules' => [],
+            ]);
+        $this->app->instance(RouterGateway::class, $gateway);
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->call('discoverNetworkConfiguration')
+            ->assertHasNoErrors()
+            ->assertSet('networkConfigurationDiscovered', true)
+            ->assertSee('192.168.88.1/24')
+            ->assertSee('mmutech-lan-dhcp')
+            ->assertSee('srcnat → masquerade')
+            ->assertSee('MMUTech managed');
+    }
+
     public function test_it_queues_a_standalone_router_hotspot_user_profile(): void
     {
         $user = User::factory()->create();
@@ -175,6 +232,56 @@ class RouterNetworkConfigurationTest extends TestCase
             'status' => 'queued',
             'related_id' => null,
         ]);
+    }
+
+    public function test_it_queues_cookie_login_for_router_hotspot_server_profiles(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        Bus::fake();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->call('openCookieLoginConfirmation')
+            ->assertSet('confirmationDialog', 'cookie_login')
+            ->call('enableHotspotCookieLogin')
+            ->assertSet('confirmationDialog', '')
+            ->assertDispatched('app-alert')
+            ->assertHasNoErrors();
+
+        Bus::assertDispatched(EnableRouterHotspotCookieLoginJob::class);
+        $this->assertDatabaseHas('router_jobs', [
+            'router_id' => $router->getKey(),
+            'type' => 'enable_hotspot_cookie_login',
+            'status' => 'queued',
+        ]);
+    }
+
+    public function test_it_queues_a_profile_with_no_rate_limit_when_both_rates_are_blank(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        Bus::fake();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->set('hotspotProfileName', 'guest-access')
+            ->set('hotspotProfileSharedUsers', '2')
+            ->call('createRouterHotspotUserProfile')
+            ->assertHasNoErrors();
+
+        $routerJob = RouterJob::query()
+            ->where('router_id', $router->getKey())
+            ->where('type', 'create_hotspot_user_profile')
+            ->firstOrFail();
+
+        $this->assertNull($routerJob->payload['rate_limit']);
+        $this->assertSame(2, $routerJob->payload['shared_users']);
+        Bus::assertDispatched(CreateRouterHotspotUserProfileJob::class);
     }
 
     public function test_it_requires_both_rate_limit_values_when_one_is_set(): void
