@@ -2,6 +2,8 @@
 
 namespace App\Services\Payments;
 
+use App\Enums\PurchaseStatus;
+use App\Enums\TransactionStatus;
 use App\Models\Customer;
 use App\Models\Plan;
 use App\Models\Purchase;
@@ -9,6 +11,8 @@ use App\Models\Router;
 use App\Models\Transaction;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
+use Throwable;
 
 class PaystackService
 {
@@ -35,24 +39,33 @@ class PaystackService
             'router_id' => $purchase->router_id,
             'amount' => $purchase->total_amount,
             'currency' => $purchase->currency,
-            'status' => 'pending',
+            'status' => TransactionStatus::Pending,
             'channel' => 'card',
             'metadata' => ['purchase_public_id' => $purchase->public_id],
         ]);
 
-        $response = Http::withToken($this->secret)
-            ->acceptJson()
-            ->post($this->baseUrl.'/transaction/initialize', [
-                'email' => $purchase->customer->email ?? 'customer@example.com',
-                'amount' => (int) round($purchase->total_amount * 100),
-                'currency' => $purchase->currency,
-                'reference' => $reference,
-                'callback_url' => route('paystack.callback'),
-                'metadata' => [
-                    'purchase_id' => $purchase->public_id,
-                    'plan_id' => $purchase->plan->code,
-                ],
+        try {
+            $response = Http::withToken($this->secret)
+                ->acceptJson()
+                ->post($this->baseUrl.'/transaction/initialize', [
+                    'email' => $purchase->customer->email ?? 'customer@example.com',
+                    'amount' => (int) round($purchase->total_amount * 100),
+                    'currency' => $purchase->currency,
+                    'reference' => $reference,
+                    'callback_url' => route('paystack.callback'),
+                    'metadata' => [
+                        'purchase_id' => $purchase->public_id,
+                        'plan_id' => $purchase->plan->code,
+                    ],
+                ]);
+        } catch (Throwable $exception) {
+            $transaction->update([
+                'status' => TransactionStatus::Failed,
+                'failure_reason' => $exception->getMessage(),
             ]);
+
+            throw $exception;
+        }
 
         $data = $response->json();
 
@@ -69,7 +82,7 @@ class PaystackService
         }
 
         $transaction->update([
-            'status' => 'failed',
+            'status' => TransactionStatus::Failed,
             'failure_reason' => $data['message'] ?? 'Initialization failed',
             'gateway_response' => $data,
         ]);
@@ -95,21 +108,26 @@ class PaystackService
             $status = $data['data']['status'] ?? 'failed';
             if ($status === 'success') {
                 $transaction->update([
-                    'status' => 'success',
+                    'status' => TransactionStatus::Paid,
                     'provider_reference' => $data['data']['reference'] ?? $reference,
                     'paid_at' => now(),
                     'verified_at' => now(),
                     'gateway_response' => $data,
                     'channel' => $data['data']['channel'] ?? $transaction->channel,
                 ]);
+
                 $purchase = $transaction->purchase;
-                if ($purchase && $purchase->status->value !== 'fulfilled') {
-                    $purchase->update(['status' => 'paid']);
+                if ($purchase && $purchase->status === PurchaseStatus::PendingPayment) {
+                    $purchase->update(['status' => PurchaseStatus::Paid]);
                 }
             } elseif ($status === 'abandoned') {
-                $transaction->update(['status' => 'abandoned', 'gateway_response' => $data]);
+                $transaction->update(['status' => TransactionStatus::Abandoned, 'gateway_response' => $data]);
             } else {
-                $transaction->update(['status' => 'failed', 'gateway_response' => $data, 'failure_reason' => $data['data']['gateway_response'] ?? null]);
+                $transaction->update([
+                    'status' => TransactionStatus::Failed,
+                    'gateway_response' => $data,
+                    'failure_reason' => $data['data']['gateway_response'] ?? null,
+                ]);
             }
         }
 
@@ -118,6 +136,10 @@ class PaystackService
 
     public function createPurchase(Customer $customer, Plan $plan, Router $router, int $quantity = 1): Purchase
     {
+        if ($quantity < 1) {
+            throw new InvalidArgumentException('Purchase quantity must be at least one.');
+        }
+
         $unit = $plan->price;
         $total = $unit * $quantity;
 
@@ -129,7 +151,7 @@ class PaystackService
             'unit_price' => $unit,
             'total_amount' => $total,
             'currency' => $plan->currency,
-            'status' => 'pending',
+            'status' => PurchaseStatus::PendingPayment,
         ]);
     }
 }

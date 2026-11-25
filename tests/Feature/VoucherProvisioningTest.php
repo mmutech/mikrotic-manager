@@ -584,8 +584,64 @@ class VoucherProvisioningTest extends TestCase
 
         $this->assertDatabaseHas('vouchers', [
             'id' => $voucher->getKey(),
-            'lifecycle_status' => VoucherLifecycleStatus::Active->value,
+            'lifecycle_status' => VoucherLifecycleStatus::Expired->value,
             'provisioning_status' => ProvisioningStatus::Provisioned->value,
+        ]);
+    }
+
+    public function test_it_marks_expired_vouchers_expired_when_the_router_is_unavailable(): void
+    {
+        $router = Router::factory()->create();
+        $voucher = $this->createProvisionedVoucher($router, [
+            'first_used_at' => now()->subHours(2),
+            'expires_at' => now()->subMinute(),
+        ]);
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())
+            ->method('make')
+            ->willThrowException(RouterProbeException::configuration('Router unavailable'));
+        $audit = $this->createMock(AuditLogger::class);
+        $audit->method('record')->willReturn(new AuditLog);
+
+        $service = new VoucherValiditySyncService(
+            $connections,
+            $this->createMock(RouterApiRecorder::class),
+            $audit,
+        );
+
+        $service->sync();
+
+        $this->assertDatabaseHas('vouchers', [
+            'id' => $voucher->getKey(),
+            'lifecycle_status' => VoucherLifecycleStatus::Expired->value,
+            'provisioning_status' => ProvisioningStatus::Provisioned->value,
+        ]);
+    }
+
+    public function test_it_marks_expired_vouchers_expired_even_when_not_provisioned(): void
+    {
+        $voucher = Voucher::factory()->create([
+            'lifecycle_status' => VoucherLifecycleStatus::Active,
+            'provisioning_status' => ProvisioningStatus::Failed,
+            'expires_at' => now()->subMinute(),
+        ]);
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->never())->method('make');
+        $audit = $this->createMock(AuditLogger::class);
+        $audit->method('record')->willReturn(new AuditLog);
+
+        $service = new VoucherValiditySyncService(
+            $connections,
+            $this->createMock(RouterApiRecorder::class),
+            $audit,
+        );
+
+        $service->sync();
+
+        $this->assertDatabaseHas('vouchers', [
+            'id' => $voucher->getKey(),
+            'lifecycle_status' => VoucherLifecycleStatus::Expired->value,
+            'provisioning_status' => ProvisioningStatus::Failed->value,
         ]);
     }
 

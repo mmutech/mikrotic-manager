@@ -427,63 +427,63 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
             <div class="border-t border-slate-200 px-4 py-3">{{ $vouchers->links() }}</div>
         @endif
     </div>
-</div>
 
-@if ($provisioningModalState !== 'closed')
-    <div class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="bulk-voucher-provisioning-title">
-        <button type="button" class="absolute inset-0 h-full w-full cursor-default" wire:click="closeProvisioningModal" aria-label="Close dialog"></button>
-        <div class="relative z-10 w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-6">
-            <div class="flex items-start justify-between gap-4">
-                <h2 id="bulk-voucher-provisioning-title" class="text-lg font-semibold text-slate-900">
-                    {{ $provisioningModalState === 'confirm' ? 'Provision selected vouchers?' : 'Provisioning alert' }}
-                </h2>
-                <button type="button" wire:click="closeProvisioningModal" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close dialog">×</button>
-            </div>
-            <p class="mt-3 text-sm leading-6 text-slate-600">
-                {{ $provisioningModalState === 'confirm'
-                    ? 'Queue '.count($selectedVouchers).' selected voucher(s) for their routers?'
-                    : $provisioningAlertMessage }}
-            </p>
-            @error('selectedVouchers') <p class="mm-error mt-3">{{ $message }}</p> @enderror
-            <div class="mt-6 flex justify-end gap-2">
-                @if ($provisioningModalState === 'confirm')
-                    <button type="button" wire:click="closeProvisioningModal" class="mm-btn-secondary">Cancel</button>
-                    <button type="button" wire:click="provisionSelected" wire:loading.attr="disabled" class="mm-btn-primary">Provision selected</button>
-                @else
-                    <button type="button" wire:click="closeProvisioningModal" class="mm-btn-primary">Close</button>
-                @endif
+    @if ($provisioningModalState !== 'closed')
+        <div class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="bulk-voucher-provisioning-title">
+            <button type="button" class="absolute inset-0 h-full w-full cursor-default" wire:click="closeProvisioningModal" aria-label="Close dialog"></button>
+            <div class="relative z-10 w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-6">
+                <div class="flex items-start justify-between gap-4">
+                    <h2 id="bulk-voucher-provisioning-title" class="text-lg font-semibold text-slate-900">
+                        {{ $provisioningModalState === 'confirm' ? 'Provision selected vouchers?' : 'Provisioning alert' }}
+                    </h2>
+                    <button type="button" wire:click="closeProvisioningModal" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close dialog">×</button>
+                </div>
+                <p class="mt-3 text-sm leading-6 text-slate-600">
+                    {{ $provisioningModalState === 'confirm'
+                        ? 'Queue '.count($selectedVouchers).' selected voucher(s) for their routers?'
+                        : $provisioningAlertMessage }}
+                </p>
+                @error('selectedVouchers') <p class="mm-error mt-3">{{ $message }}</p> @enderror
+                <div class="mt-6 flex justify-end gap-2">
+                    @if ($provisioningModalState === 'confirm')
+                        <button type="button" wire:click="closeProvisioningModal" class="mm-btn-secondary">Cancel</button>
+                        <button type="button" wire:click="provisionSelected" wire:loading.attr="disabled" class="mm-btn-primary">Provision selected</button>
+                    @else
+                        <button type="button" wire:click="closeProvisioningModal" class="mm-btn-primary">Close</button>
+                    @endif
+                </div>
             </div>
         </div>
-    </div>
-@endif
+    @endif
 
-@if ($canPrint && $printingVouchers->isNotEmpty())
-    <div class="voucher-print-sheet" aria-label="Printable vouchers">
-        @foreach ($printingVouchers as $voucher)
-            <section class="voucher-print-ticket">
-                <h2 class="text-lg font-bold">{{ $voucher->router->name }}</h2>
-                <p class="mt-1 text-xs font-semibold">Wi-Fi Voucher</p>
-                <p class="mt-1 text-xs">Enter this code to access the internet</p>
-                <p class="voucher-code mt-4 rounded-lg border border-slate-300 px-3 py-4 text-center font-mono text-2xl font-bold tracking-wider">
-                    {{ $voucher->username }}
-                </p>
-                <p class="mt-3 text-xs">{{ $voucher->plan?->name ?? $voucher->hotspot_profile ?? 'Voucher' }} · {{ $voucher->router->name }}</p>
-            </section>
-        @endforeach
-    </div>
-@endif
+    @if ($canPrint && $printingVouchers->isNotEmpty())
+        <div class="voucher-print-sheet" aria-label="Printable vouchers">
+            @foreach ($printingVouchers as $voucher)
+                <section class="voucher-print-ticket">
+                    <h2 class="text-lg font-bold">{{ $voucher->router->name }}</h2>
+                    <p class="mt-1 text-xs font-semibold">Wi-Fi Voucher</p>
+                    <p class="mt-1 text-xs">Enter this code to access the internet</p>
+                    <p class="voucher-code mt-4 rounded-lg border border-slate-300 px-3 py-4 text-center font-mono text-2xl font-bold tracking-wider">
+                        {{ $voucher->username }}
+                    </p>
+                    <p class="mt-3 text-xs">{{ $voucher->plan?->name ?? $voucher->hotspot_profile ?? 'Voucher' }} · {{ $voucher->router->name }}</p>
+                </section>
+            @endforeach
+        </div>
+    @endif
 
-<style>
-    .voucher-print-sheet {
-        display: none;
-    }
-</style>
+    <style>
+        .voucher-print-sheet {
+            display: none;
+        }
+    </style>
 
-@script
-    <script>
-        $wire.on('print-vouchers', async () => {
-            window.printVoucherContent('.voucher-print-sheet');
-            await $wire.clearPrintingVoucherIds();
-        });
-    </script>
-@endscript
+    @script
+        <script>
+            $wire.on('print-vouchers', async () => {
+                window.printVoucherContent('.voucher-print-sheet');
+                await $wire.clearPrintingVoucherIds();
+            });
+        </script>
+    @endscript
+</div>

@@ -15,14 +15,21 @@ class PaystackController extends Controller
         if (! $reference) {
             return redirect()->route('dashboard')->with('status', 'Missing payment reference.');
         }
+        $verified = false;
+
         try {
-            $paystack->verify($reference);
+            $result = $paystack->verify($reference);
+            $verified = ($result['status'] ?? false)
+                && (($result['data']['status'] ?? null) === 'success');
         } catch (\Throwable $e) {
             Log::error('paystack.callback.error', ['ref' => $reference, 'err' => $e->getMessage()]);
         }
+
         $transaction = Transaction::where('reference', $reference)->first();
         if ($transaction && $transaction->purchase) {
-            return redirect()->route('purchases.show', $transaction->purchase->public_id)->with('status', 'Payment verified.');
+            return redirect()
+                ->route('purchases.show', $transaction->purchase)
+                ->with('status', $verified ? 'Payment verified.' : 'Payment could not be verified yet.');
         }
         return redirect()->route('transactions.index')->with('status', 'Payment processed.');
     }
@@ -31,13 +38,16 @@ class PaystackController extends Controller
     {
         $payload = $request->getContent();
         $signature = $request->header('x-paystack-signature');
-        $secret = config('services.paystack.webhook_secret') ?? config('services.paystack.secret');
+        $secret = config('services.paystack.webhook_secret') ?: config('services.paystack.secret');
 
-        if ($secret && $signature) {
-            $computed = hash_hmac('sha512', $payload, $secret);
-            if (! hash_equals($computed, $signature)) {
-                abort(401);
-            }
+        if (! is_string($secret) || $secret === '') {
+            Log::error('paystack.webhook.misconfigured', ['message' => 'Webhook secret is not configured.']);
+
+            abort(503, 'Paystack webhook secret is not configured.');
+        }
+
+        if (! is_string($signature) || ! hash_equals(hash_hmac('sha512', $payload, $secret), $signature)) {
+            abort(401);
         }
 
         $event = $request->json()->all();

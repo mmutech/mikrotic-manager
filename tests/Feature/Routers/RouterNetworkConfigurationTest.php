@@ -157,7 +157,7 @@ class RouterNetworkConfigurationTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('super-admin');
-        $router = Router::factory()->create();
+        $router = Router::factory()->create(['identity' => 'Branch-HQ']);
         $gateway = $this->createMock(RouterGateway::class);
         $gateway->expects($this->once())
             ->method('networkConfiguration')
@@ -179,7 +179,7 @@ class RouterNetworkConfigurationTest extends TestCase
                 'dhcp_servers' => [[
                     'id' => '*2',
                     'title' => 'mmutech-lan-dhcp',
-                    'detail' => 'bridge-lan · mmutech-lan-pool · enabled',
+                    'detail' => 'bridge-lan · Branch-HQ · enabled',
                     'comment' => 'MMUTech managed LAN DHCP server',
                     'disabled' => false,
                     'managed' => true,
@@ -206,6 +206,40 @@ class RouterNetworkConfigurationTest extends TestCase
             ->assertSee('mmutech-lan-dhcp')
             ->assertSee('srcnat → masquerade')
             ->assertSee('MMUTech managed');
+    }
+
+    public function test_it_auto_detects_management_source_cidrs_without_queueing_a_router_job(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->expects($this->once())
+            ->method('managementSourceCidrs')
+            ->with(
+                $this->callback(fn (Router $requestedRouter): bool => $requestedRouter->is($router)),
+                $this->isType('string'),
+            )
+            ->willReturn(['10.20.1.0/24', '203.0.113.25/32']);
+        $this->app->instance(RouterGateway::class, $gateway);
+        Bus::fake();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->set('networkImpactConfirmed', true)
+            ->call('discoverManagementSourceCidrs')
+            ->assertHasNoErrors()
+            ->assertSet('managementCidrs', "10.20.1.0/24\n203.0.113.25/32")
+            ->assertSet('networkImpactConfirmed', false)
+            ->assertSet('networkCommands', [])
+            ->assertSee("Last auto-detect resolved this server's source network to 2 CIDR(s)");
+
+        Bus::assertNotDispatched(ConfigureRouterNetworkJob::class);
+        $this->assertDatabaseMissing('router_jobs', [
+            'router_id' => $router->getKey(),
+            'type' => 'configure_network',
+        ]);
     }
 
     public function test_it_queues_a_standalone_router_hotspot_user_profile(): void

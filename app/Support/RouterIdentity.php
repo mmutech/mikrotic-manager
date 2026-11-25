@@ -3,10 +3,17 @@
 namespace App\Support;
 
 use App\Exceptions\RouterProbeException;
+use App\Models\Router;
 
 final class RouterIdentity
 {
     public const MAX_LENGTH = 64;
+
+    /** Resolve the normalized identity stored on a router model. */
+    public static function fromRouter(Router $router): string
+    {
+        return self::normalize($router->identity, $router->name);
+    }
 
     /**
      * Resolve the identity to apply to RouterOS.

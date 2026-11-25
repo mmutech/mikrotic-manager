@@ -11,6 +11,7 @@ use App\Services\RouterApiRecorder;
 use App\Services\RouterConnectionFactory;
 use App\Support\HotspotRateLimit;
 use App\Support\HotspotServerConfiguration;
+use App\Support\Ipv4Cidr;
 use InvalidArgumentException;
 use Mivo\LaravelMikrotikRos7\Services\SystemManager;
 use Mivo\MikrotikRos7\Client;
@@ -38,6 +39,8 @@ class MikrotikRouterGateway implements RouterGateway
     private const HOTSPOT_COOKIE_LIFETIME_SECONDS = 315_360_000;
 
     private const NETWORK_MANAGED_COMMENT_PREFIX = 'MMUTech managed ';
+
+    private const MANAGED_FIREWALL_COMMENT_PREFIX = 'MMUTech managed firewall ';
 
     public function __construct(
         private readonly RouterConnectionFactory $connections,
@@ -303,6 +306,109 @@ class MikrotikRouterGateway implements RouterGateway
         ];
     }
 
+    public function managementSourceCidrs(Router $router, string $correlationId): array
+    {
+        $client = $this->connections->make($router);
+        $connections = $this->getRows($client, $router, '/rest/ip/firewall/connection', $correlationId);
+        $source = $this->currentManagementSource($client, $router, $connections);
+
+        if ($source === null) {
+            return [];
+        }
+
+        $candidates = [];
+
+        foreach ($this->getRows($client, $router, '/rest/ip/firewall/filter', $correlationId) as $row) {
+            if ($this->routerOsBoolean($row['disabled'] ?? false)) {
+                continue;
+            }
+
+            $comment = $this->stringOrNull($row['comment'] ?? null);
+
+            if ($comment === null || ! str_starts_with($comment, self::MANAGED_FIREWALL_COMMENT_PREFIX.'input management')) {
+                continue;
+            }
+
+            $cidr = $this->stringOrNull($row['src-address'] ?? null);
+
+            if ($cidr !== null && Ipv4Cidr::contains($cidr, $source)) {
+                $candidates[] = $cidr;
+            }
+        }
+
+        foreach ($this->getRows($client, $router, '/rest/ip/service', $correlationId) as $row) {
+            if ($this->routerOsBoolean($row['disabled'] ?? false)) {
+                continue;
+            }
+
+            $name = strtolower((string) ($this->stringOrNull($row['name'] ?? null) ?? ''));
+            $port = $this->stringOrNull($row['port'] ?? null);
+
+            if (
+                ! in_array($name, ['api', 'api-ssl', 'rest', 'www', 'www-ssl'], true)
+                && $port !== (string) $router->rest_port
+            ) {
+                continue;
+            }
+
+            foreach (Ipv4Cidr::splitList($this->stringOrNull($row['available-from'] ?? null)) as $cidr) {
+                if (Ipv4Cidr::contains($cidr, $source)) {
+                    $candidates[] = $cidr;
+                }
+            }
+        }
+
+        return Ipv4Cidr::normalizeList($candidates === [] ? [$source.'/32'] : $candidates);
+    }
+
+    /**
+     * Find the source address RouterOS sees for the current API connection.
+     *
+     * @param  array<int, array<string, mixed>>  $connections
+     */
+    private function currentManagementSource(Client $client, Router $router, array $connections): ?string
+    {
+        $localPort = $client instanceof DetailedMikrotikClient ? $client->lastLocalPort() : null;
+        $localIp = $client instanceof DetailedMikrotikClient ? $client->lastLocalIp() : null;
+        $sources = [];
+
+        foreach ($connections as $row) {
+            $destinationPort = $row['dst-port'] ?? null;
+            $protocol = strtolower((string) ($this->stringOrNull($row['protocol'] ?? null) ?? ''));
+
+            if (
+                $protocol !== 'tcp'
+                || ! is_scalar($destinationPort)
+                || (string) $destinationPort !== (string) $router->rest_port
+                || $this->routerOsBoolean($row['invalid'] ?? false)
+            ) {
+                continue;
+            }
+
+            $source = $this->stringOrNull($row['src-address'] ?? null);
+
+            if ($source === null || filter_var($source, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+                continue;
+            }
+
+            $sourcePort = $row['src-port'] ?? null;
+            $matchesPort = $localPort !== null && is_scalar($sourcePort) && (int) $sourcePort === $localPort;
+            $matchesLocalIp = $localIp !== null && $source === $localIp;
+
+            if (($localPort !== null || $localIp !== null) && ! $matchesPort && ! $matchesLocalIp) {
+                continue;
+            }
+
+            $sources[] = $source;
+        }
+
+        if ($localPort !== null) {
+            return $sources[0] ?? null;
+        }
+
+        return count($sources) === 1 ? $sources[0] : null;
+    }
+
     public function configureBridge(
         Router $router,
         string $bridgeName,
@@ -503,6 +609,7 @@ class MikrotikRouterGateway implements RouterGateway
             $correlationId,
         );
         $servers = [];
+        $managedName = HotspotServerConfiguration::nameFromRouter($router);
 
         foreach ($rows as $row) {
             $name = $this->stringOrNull($row['name'] ?? null);
@@ -518,7 +625,7 @@ class MikrotikRouterGateway implements RouterGateway
                 'address_pool' => $this->stringOrNull($row['address-pool'] ?? null),
                 'profile' => $this->stringOrNull($row['profile'] ?? null),
                 'disabled' => $this->routerOsBoolean($row['disabled'] ?? false),
-                'managed' => $name === HotspotServerConfiguration::NAME,
+                'managed' => $name === $managedName,
             ];
         }
 
@@ -532,6 +639,8 @@ class MikrotikRouterGateway implements RouterGateway
 
     public function configureHotspotServer(Router $router, array $configuration, string $correlationId): array
     {
+        $configuration['server_name'] = HotspotServerConfiguration::nameFromRouter($router);
+        $configuration['address_pool'] = HotspotServerConfiguration::addressPoolFromRouter($router);
         $configuration = HotspotServerConfiguration::normalize($configuration);
         $desired = HotspotServerConfiguration::desiredSettings($configuration);
         $client = $this->connections->make($router);
@@ -539,8 +648,9 @@ class MikrotikRouterGateway implements RouterGateway
         $servers = $this->getRows($client, $router, $endpoint, $correlationId);
 
         // RouterOS 7 does not expose a comment field on /ip/hotspot, so the
-        // server name is the managed identity. An existing server with the same
-        // name on the same interface is updated; anything else is left alone.
+        // server name is derived from the router identity. An existing server
+        // with the same name on the same interface is updated; anything else
+        // is left alone.
         $managed = array_values(array_filter(
             $servers,
             fn (array $server): bool => ($server['name'] ?? null) === $desired['name'],
@@ -604,11 +714,11 @@ class MikrotikRouterGateway implements RouterGateway
         return [
             'hotspot_server' => $this->check(
                 $this->findHotspotServerRow($updated, $desired) !== null,
-                'RouterOS HotSpot server name, interface, pool, and profile were read back.'
+                'RouterOS HotSpot server name, interface, pool, and profile were read back from the router identity.'
             ),
             'hotspot_server_unique' => $this->check(
                 count($managedAfter) === 1,
-                'Exactly one HotSpot server with the configured name is present.',
+                'Exactly one HotSpot server with the router identity name is present.',
             ),
             'hotspot_server_profile' => $this->check(
                 $profileExists,

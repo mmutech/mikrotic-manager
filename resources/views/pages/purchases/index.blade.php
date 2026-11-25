@@ -18,6 +18,8 @@ new #[Layout('layouts::app')] #[Title('Purchases')] class extends Component
 
     public function render()
     {
+        $this->authorize('viewAny', Purchase::class);
+
         $query = Purchase::query()->with(['customer', 'plan', 'router']);
         if ($this->search !== '') {
             $term = '%'.$this->search.'%';

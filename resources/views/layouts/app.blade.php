@@ -271,24 +271,35 @@
                     printWindow.focus();
                     printWindow.print();
                 }, { once: true });
-                frame.srcdoc = `<!doctype html>
-                    <html lang="en">
-                    <head>
-                        <meta charset="utf-8">
-                        <title>Wi-Fi Voucher</title>
-                        <style>
-                            * { box-sizing: border-box; }
-                            @page { margin: 10mm; }
-                            body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; }
-                            .voucher-print-sheet { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 6mm; }
-                            .voucher-print-ticket { display: block !important; break-inside: avoid; margin: 0; padding: 6mm; border: 1px solid #cbd5e1; }
-                            .voucher-print-ticket h1, .voucher-print-ticket h2 { margin: 0; font-size: 16pt; }
-                            .voucher-print-ticket p { margin: 3mm 0 0; font-size: 9pt; }
-                            .voucher-print-ticket .voucher-code { margin-top: 5mm; padding: 4mm; border: 1px solid #cbd5e1; text-align: center; font: bold 22pt monospace; }
-                        </style>
-                    </head>
-                    <body>${content}</body>
-                    </html>`;
+                // Build closing tags at runtime so Livewire/Laravel Boost script injection
+                // cannot mistake them for the layout's own closing tags and split this script.
+                const closeStyle = '<' + '/style>';
+                const closeHead = '<' + '/head>';
+                const closeBody = '<' + '/body>';
+                const closeHtml = '<' + '/html>';
+
+                frame.srcdoc = [
+                    '<!doctype html>',
+                    '<html lang="en">',
+                    '<head>',
+                    '<meta charset="utf-8">',
+                    '<title>Wi-Fi Voucher</title>',
+                    '<style>',
+                    '* { box-sizing: border-box; }',
+                    '@page { margin: 10mm; }',
+                    'body { margin: 0; color: #0f172a; font-family: Arial, sans-serif; }',
+                    '.voucher-print-sheet { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 6mm; }',
+                    '.voucher-print-ticket { display: block !important; break-inside: avoid; margin: 0; padding: 6mm; border: 1px solid #cbd5e1; }',
+                    '.voucher-print-ticket h1, .voucher-print-ticket h2 { margin: 0; font-size: 16pt; }',
+                    '.voucher-print-ticket p { margin: 3mm 0 0; font-size: 9pt; }',
+                    '.voucher-print-ticket .voucher-code { margin-top: 5mm; padding: 4mm; border: 1px solid #cbd5e1; text-align: center; font: bold 22pt monospace; }',
+                    closeStyle,
+                    closeHead,
+                    '<body>',
+                    content,
+                    closeBody,
+                    closeHtml,
+                ].join('\n');
                 document.body.appendChild(frame);
             };
         </script>

@@ -109,12 +109,44 @@
         <section class="mm-card overflow-hidden xl:col-span-2" aria-labelledby="router-facts-heading">
             <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                 <h2 id="router-facts-heading" class="text-base font-semibold text-slate-900">Verified router facts</h2>
-                <p class="mt-0.5 text-xs text-slate-500">Read-only data from the most recent successful probe</p>
+                <p class="mt-0.5 text-xs text-slate-500">Read-only probe data and the latest identity verification</p>
             </div>
+            @php
+                $identityVerification = $latestIdentityReportJob && is_array($latestIdentityReportJob->payload['verification'] ?? null)
+                    ? $latestIdentityReportJob->payload['verification']
+                    : null;
+            @endphp
             <dl class="grid gap-5 px-5 py-5 sm:grid-cols-2 sm:px-6">
                 <div>
                     <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Identity</dt>
                     <dd class="mt-1 text-sm font-medium text-slate-900">{{ $router->identity ?: 'Not read yet' }}</dd>
+                </div>
+                <div class="sm:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <dt class="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <span>Latest identity provisioning</span>
+                        @if ($identityVerification !== null)
+                            <span class="mm-badge normal-case tracking-normal {{ ($identityVerification['status'] ?? '') === 'passed' ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-red-50 text-red-700 ring-red-600/20' }}">
+                                {{ ($identityVerification['status'] ?? '') === 'passed' ? 'Verified' : 'Mismatch or failure' }}
+                            </span>
+                        @endif
+                    </dt>
+                    <dd class="mt-2 text-sm">
+                        @if ($identityVerification === null)
+                            <p class="text-xs text-slate-500">No identity provisioning verification yet.</p>
+                        @else
+                            <div class="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Expected</p>
+                                    <p class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['expected'] ?? 'Not available' }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Read back from RouterOS</p>
+                                    <p class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['actual'] ?? 'Not available' }}</p>
+                                </div>
+                            </div>
+                            <p class="mt-2 text-xs text-slate-500">{{ $identityVerification['verified_at'] ?? 'Time unavailable' }} · {{ $latestIdentityReportJob->status->label() }}</p>
+                        @endif
+                    </dd>
                 </div>
                 <div>
                     <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">RouterOS version</dt>
@@ -163,33 +195,6 @@
                 </div>
             @endif
         </section>
-
-        @if ($latestIdentityReportJob && is_array($latestIdentityReportJob->payload['verification'] ?? null))
-            @php
-                $identityVerification = $latestIdentityReportJob->payload['verification'];
-            @endphp
-            <section class="mm-card overflow-hidden xl:col-span-2" aria-labelledby="identity-verification-heading">
-                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-4 sm:px-6">
-                    <div>
-                        <h2 id="identity-verification-heading" class="text-base font-semibold text-slate-900">Latest identity provisioning</h2>
-                        <p class="mt-0.5 text-xs text-slate-500">{{ $identityVerification['verified_at'] ?? 'Time unavailable' }} · {{ $latestIdentityReportJob->status->label() }}</p>
-                    </div>
-                    <span class="mm-badge {{ ($identityVerification['status'] ?? '') === 'passed' ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-red-50 text-red-700 ring-red-600/20' }}">
-                        {{ ($identityVerification['status'] ?? '') === 'passed' ? 'Verified' : 'Mismatch or failure' }}
-                    </span>
-                </div>
-                <dl class="grid gap-4 px-5 py-4 text-sm sm:grid-cols-2 sm:px-6">
-                    <div>
-                        <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Expected</dt>
-                        <dd class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['expected'] ?? 'Not available' }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500">Read back from RouterOS</dt>
-                        <dd class="mt-1 break-words font-mono text-xs font-medium text-slate-900">{{ $identityVerification['actual'] ?? 'Not available' }}</dd>
-                    </div>
-                </dl>
-            </section>
-        @endif
 
         <section class="space-y-6">
             <div class="mm-card overflow-hidden">
@@ -507,9 +512,24 @@
                             @error('dnsServers') <p class="mm-error">{{ $message }}</p> @enderror
                         </div>
                         <div>
-                            <label for="networkManagementCidrs" class="mm-label">Management source CIDRs</label>
+                            <div class="flex items-center justify-between gap-2">
+                                <label for="networkManagementCidrs" class="mm-label">Management source CIDRs</label>
+                                <button
+                                    type="button"
+                                    wire:click="discoverManagementSourceCidrs"
+                                    wire:loading.attr="disabled"
+                                    wire:target="discoverManagementSourceCidrs"
+                                    class="text-xs font-semibold text-brand-700 hover:underline disabled:opacity-50"
+                                >
+                                    <span wire:loading.remove wire:target="discoverManagementSourceCidrs">Auto-detect</span>
+                                    <span wire:loading wire:target="discoverManagementSourceCidrs">Detecting…</span>
+                                </button>
+                            </div>
                             <textarea id="networkManagementCidrs" wire:model.live="managementCidrs" rows="2" class="mm-input" placeholder="IPv4 CIDR(s), comma or newline separated"></textarea>
-                            <p class="mm-help">Use /8 through /32 and include the MMUTech server's source network.</p>
+                            <p class="mm-help">Use /8 through /32 and include the MMUTech server's source network. Auto-detect resolves this server's source address as the router sees it.</p>
+                            @if ($managementCidrDetectionNote !== '')
+                                <p class="mm-help mt-1">{{ $managementCidrDetectionNote }}</p>
+                            @endif
                             @error('managementCidrs') <p class="mm-error">{{ $message }}</p> @enderror
                         </div>
                     </div>
@@ -644,7 +664,7 @@
         <section class="mm-card overflow-hidden" aria-labelledby="hotspot-server-heading">
             <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                 <h2 id="hotspot-server-heading" class="text-base font-semibold text-slate-900">HotSpot server</h2>
-                <p class="mt-1 text-sm text-slate-500">Create or update the RouterOS HotSpot server on a LAN interface. A server with the same name on the selected interface is updated; other existing servers are left unchanged.</p>
+                <p class="mt-1 text-sm text-slate-500">Create or update the RouterOS HotSpot server on a LAN interface using the router identity as its name. A server with that name on the selected interface is updated; other existing servers are left unchanged.</p>
             </div>
 
             <div class="space-y-5 px-5 py-5 sm:px-6">
@@ -696,8 +716,9 @@
                     <form class="space-y-5">
                         <div class="grid gap-4 sm:grid-cols-2">
                             <div>
-                                <label for="hotspotServerName" class="mm-label">Server name</label>
-                                <input id="hotspotServerName" type="text" wire:model="hotspotServerName" maxlength="64" required class="mm-input">
+                                <span class="mm-label">Server name</span>
+                                <p id="hotspotServerName" class="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm text-slate-900">{{ $hotspotServerName }}</p>
+                                <p class="mt-1 text-xs text-slate-500">Derived from this router's identity.</p>
                                 @error('hotspotServerName') <p class="mm-error">{{ $message }}</p> @enderror
                             </div>
                             <div>
@@ -713,13 +734,9 @@
                                 @error('hotspotServerInterface') <p class="mm-error">{{ $message }}</p> @enderror
                             </div>
                             <div>
-                                <label for="hotspotServerPool" class="mm-label">Address pool</label>
-                                <select id="hotspotServerPool" wire:model="hotspotServerPool" required class="mm-input">
-                                    <option value="">Select an IP pool</option>
-                                    @foreach ($hotspotServerPools as $pool)
-                                        <option value="{{ $pool['name'] }}">{{ $pool['name'] }}{{ $pool['ranges'] ? ' · '.$pool['ranges'] : '' }}</option>
-                                    @endforeach
-                                </select>
+                                <span class="mm-label">Address pool <span class="ml-1 text-xs font-normal text-slate-500">[Locked]</span></span>
+                                <p id="hotspotServerPool" class="mt-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm text-slate-900">{{ $hotspotServerPool }}</p>
+                                <p class="mt-1 text-xs text-slate-500">Derived from this router's identity.</p>
                                 @error('hotspotServerPool') <p class="mm-error">{{ $message }}</p> @enderror
                             </div>
                             <div>
@@ -736,7 +753,7 @@
 
                         <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="note">
                             <p class="font-semibold">Review the HotSpot impact before applying.</p>
-                            <p class="mt-1 text-xs leading-5">Clients on the selected interface will be redirected to the RouterOS HotSpot login page. The selected pool must have enough addresses for voucher clients, and the server profile controls login methods and cookie settings. Only a server with the same name on the selected interface will be updated; all other servers are left alone. The result is read back after the change. You will be asked to confirm before the job is queued.</p>
+                            <p class="mt-1 text-xs leading-5">Clients on the selected interface will be redirected to the RouterOS HotSpot login page. The server name and address pool both come from this router's identity; make sure the identity-named pool was created by network provisioning and has enough addresses for voucher clients. The server profile controls login methods and cookie settings. Only a server named after the router identity on the selected interface will be updated; all other servers are left alone. The result is read back after the change. You will be asked to confirm before the job is queued.</p>
                         </div>
 
                         @if ($pendingJob)
@@ -774,7 +791,7 @@
                             <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                     <h3 class="text-sm font-semibold text-slate-900">HotSpot server terminal commands</h3>
-                                    <p class="text-xs text-slate-500">Manual alternative for the values entered above; these commands do not change the router until pasted into its terminal.</p>
+                                    <p class="text-xs text-slate-500">Manual alternative for the values shown above; these commands do not change the router until pasted into its terminal.</p>
                                 </div>
                                 <button type="button" @click="copyCommands" class="mm-btn-secondary">
                                     <span x-text="copied ? 'Copied' : 'Copy commands'"></span>
@@ -915,7 +932,9 @@
                 @endif
             </div>
         </section>
+    @endif
 
+    @if ($canEdit)
         <section
             x-data="{ copied: false, async copyCommands() { try { await navigator.clipboard.writeText(this.$refs.routerSetupCommands.innerText); this.copied = true; window.setTimeout(() => this.copied = false, 2000); } catch { window.dispatchEvent(new CustomEvent('app-alert', { detail: { title: 'Copy failed', message: 'Clipboard unavailable. Select and copy the commands manually.', type: 'error' } })); } } }"
             class="mm-card overflow-hidden"
@@ -989,6 +1008,47 @@
         </section>
     @endif
 
+    @if ($canEdit)
+        <section class="mm-card overflow-hidden" aria-labelledby="rotate-heading">
+            <details>
+                <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 sm:px-6">
+                    <div>
+                        <h2 id="rotate-heading" class="text-base font-semibold text-slate-900">Rotate router credentials</h2>
+                        <p class="mt-0.5 text-xs text-slate-500">Replace the API user or password. Existing values are never shown.</p>
+                    </div>
+                    <svg class="h-5 w-5 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                    </svg>
+                </summary>
+
+                <form wire:submit="rotateCredentials" class="space-y-5 border-t border-slate-200 px-5 py-5 sm:px-6">
+                    <div class="grid gap-5 sm:grid-cols-2">
+                        <div class="sm:col-span-2">
+                            <label for="new_api_username" class="mm-label">RouterOS API user</label>
+                            <input id="new_api_username" type="text" wire:model="new_api_username" required maxlength="120" autocomplete="off" class="mm-input font-mono">
+                            @error('new_api_username') <p class="mm-error">{{ $message }}</p> @enderror
+                        </div>
+                        <div>
+                            <label for="new_api_password" class="mm-label">New API password</label>
+                            <input id="new_api_password" type="password" wire:model="new_api_password" required autocomplete="new-password" class="mm-input" placeholder="At least 8 characters">
+                            @error('new_api_password') <p class="mm-error">{{ $message }}</p> @enderror
+                        </div>
+                        <div>
+                            <label for="new_api_password_confirmation" class="mm-label">Confirm new password</label>
+                            <input id="new_api_password_confirmation" type="password" wire:model="new_api_password_confirmation" required autocomplete="new-password" class="mm-input">
+                        </div>
+                    </div>
+                    <div class="flex justify-end">
+                        <button type="submit" class="mm-btn-primary" wire:loading.attr="disabled" wire:target="rotateCredentials">
+                            <span wire:loading.remove wire:target="rotateCredentials">Rotate and test</span>
+                            <span wire:loading wire:target="rotateCredentials">Rotating…</span>
+                        </button>
+                    </div>
+                </form>
+            </details>
+        </section>
+    @endif
+
     @if ($canGrant || $canRevoke)
         <section class="mm-card overflow-hidden" aria-labelledby="access-heading">
             <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -1044,47 +1104,6 @@
                     </div>
                 </form>
             @endif
-        </section>
-    @endif
-
-    @if ($canEdit)
-        <section class="mm-card overflow-hidden" aria-labelledby="rotate-heading">
-            <details>
-                <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 sm:px-6">
-                    <div>
-                        <h2 id="rotate-heading" class="text-base font-semibold text-slate-900">Rotate router credentials</h2>
-                        <p class="mt-0.5 text-xs text-slate-500">Replace the API user or password. Existing values are never shown.</p>
-                    </div>
-                    <svg class="h-5 w-5 shrink-0 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-                    </svg>
-                </summary>
-
-                <form wire:submit="rotateCredentials" class="space-y-5 border-t border-slate-200 px-5 py-5 sm:px-6">
-                    <div class="grid gap-5 sm:grid-cols-2">
-                        <div class="sm:col-span-2">
-                            <label for="new_api_username" class="mm-label">RouterOS API user</label>
-                            <input id="new_api_username" type="text" wire:model="new_api_username" required maxlength="120" autocomplete="off" class="mm-input font-mono">
-                            @error('new_api_username') <p class="mm-error">{{ $message }}</p> @enderror
-                        </div>
-                        <div>
-                            <label for="new_api_password" class="mm-label">New API password</label>
-                            <input id="new_api_password" type="password" wire:model="new_api_password" required autocomplete="new-password" class="mm-input" placeholder="At least 8 characters">
-                            @error('new_api_password') <p class="mm-error">{{ $message }}</p> @enderror
-                        </div>
-                        <div>
-                            <label for="new_api_password_confirmation" class="mm-label">Confirm new password</label>
-                            <input id="new_api_password_confirmation" type="password" wire:model="new_api_password_confirmation" required autocomplete="new-password" class="mm-input">
-                        </div>
-                    </div>
-                    <div class="flex justify-end">
-                        <button type="submit" class="mm-btn-primary" wire:loading.attr="disabled" wire:target="rotateCredentials">
-                            <span wire:loading.remove wire:target="rotateCredentials">Rotate and test</span>
-                            <span wire:loading wire:target="rotateCredentials">Rotating…</span>
-                        </button>
-                    </div>
-                </form>
-            </details>
         </section>
     @endif
 
@@ -1184,7 +1203,7 @@
                         @elseif ($confirmationDialog === 'cookie_login')
                             Enable cookie-based login on all HotSpot server profiles? Existing login methods will remain enabled.
                         @elseif ($confirmationDialog === 'hotspot_server')
-                            Create or update the HotSpot server {{ $hotspotServerName }} on {{ $hotspotServerInterface }} using {{ $hotspotServerPool }} and the {{ $hotspotServerProfile }} profile? A matching server on that interface will be updated and read back.
+                            Create or update the HotSpot server {{ $hotspotServerName }} on {{ $hotspotServerInterface }} using the {{ $hotspotServerPool }} address pool and the {{ $hotspotServerProfile }} profile? The server name and address pool both come from this router's identity. A matching server on that interface will be updated and read back.
                         @else
                             Revoke {{ $router->users->firstWhere('id', $confirmationMemberId)?->name ?? 'this staff member' }}'s access to {{ $router->name }}?
                         @endif
@@ -1249,4 +1268,5 @@
             </div>
         @endif
     </section>
+
 </div>

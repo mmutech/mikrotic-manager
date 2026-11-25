@@ -40,6 +40,7 @@ class Transaction extends Model
             'amount' => 'decimal:2',
             'paid_at' => 'datetime',
             'verified_at' => 'datetime',
+            'gateway_response' => 'array',
             'metadata' => 'array',
         ];
     }

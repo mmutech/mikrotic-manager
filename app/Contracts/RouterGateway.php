@@ -50,6 +50,15 @@ interface RouterGateway
     public function networkConfiguration(Router $router, string $correlationId): array;
 
     /**
+     * Read the MMUTech server's source network as seen by RouterOS.
+     *
+     * @return array<int, string>
+     *
+     * @throws RouterProbeException
+     */
+    public function managementSourceCidrs(Router $router, string $correlationId): array;
+
+    /**
      * Create a bridge if needed and add the selected Ethernet interfaces.
      *
      * @param  array<int, string>  $interfaces

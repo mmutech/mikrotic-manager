@@ -7,6 +7,8 @@ use App\Exceptions\RouterProbeException;
 use App\Models\Router;
 use App\Services\RouterApiRecorder;
 use App\Services\RouterConnectionFactory;
+use App\Support\Ipv4Cidr;
+use App\Support\RouterIdentity;
 use Mivo\MikrotikRos7\Client;
 use Mivo\MikrotikRos7\Exceptions\MikrotikException;
 use Throwable;
@@ -112,19 +114,13 @@ class MikrotikRouterConfigurator
                 throw RouterProbeException::configuration('Every management source must be a valid IPv4 CIDR.');
             }
 
-            $cidr = trim($cidr);
+            $normalized = Ipv4Cidr::normalize($cidr);
 
-            if (! str_contains($cidr, '/')) {
-                $cidr .= '/32';
-            }
-
-            try {
-                $parsed = $this->parseIpv4Cidr($cidr, 8, 32);
-            } catch (RouterProbeException) {
+            if ($normalized === null) {
                 throw RouterProbeException::configuration('Management CIDRs must be valid IPv4 networks with prefixes from /8 through /32.');
             }
 
-            return $parsed['network'].'/'.$parsed['prefix'];
+            return $normalized;
         }, $managementCidrs)));
 
         return [
@@ -149,6 +145,7 @@ class MikrotikRouterConfigurator
     public function terminalCommands(Router $router, array $configuration): array
     {
         $configuration = $this->normalize($configuration);
+        $poolName = $this->lanPoolName($router);
 
         if (! $configuration['management_impact_confirmed']) {
             throw RouterProbeException::configuration('Confirm the network-impact warning before generating terminal commands.');
@@ -162,7 +159,7 @@ class MikrotikRouterConfigurator
                 'comment' => self::ADDRESS_COMMENT,
             ]),
             $this->terminalCommand('/ip pool add', [
-                'name' => 'mmutech-lan-pool',
+                'name' => $poolName,
                 'ranges' => $configuration['pool_range'],
                 'comment' => self::POOL_COMMENT,
             ]),
@@ -175,7 +172,7 @@ class MikrotikRouterConfigurator
             $this->terminalCommand('/ip dhcp-server add', [
                 'name' => 'mmutech-lan-dhcp',
                 'interface' => $configuration['bridge_name'],
-                'address-pool' => 'mmutech-lan-pool',
+                'address-pool' => $poolName,
                 'lease-time' => '1d',
                 'disabled' => 'no',
                 'comment' => self::DHCP_SERVER_COMMENT,
@@ -218,6 +215,7 @@ class MikrotikRouterConfigurator
     public function configure(Router $router, array $configuration, string $correlationId): array
     {
         $configuration = $this->normalize($configuration);
+        $poolName = $this->lanPoolName($router);
 
         if (! $configuration['management_impact_confirmed']) {
             throw RouterProbeException::configuration('Confirm the network-impact warning before applying this configuration.');
@@ -249,7 +247,7 @@ class MikrotikRouterConfigurator
             $client,
             $router,
             '/rest/ip/pool',
-            ['name' => 'mmutech-lan-pool'],
+            ['name' => $poolName],
             self::POOL_COMMENT,
             ['ranges' => $configuration['pool_range']],
             $correlationId,
@@ -262,7 +260,7 @@ class MikrotikRouterConfigurator
             self::DHCP_SERVER_COMMENT,
             [
                 'interface' => $configuration['bridge_name'],
-                'address-pool' => 'mmutech-lan-pool',
+                'address-pool' => $poolName,
                 'disabled' => 'no',
                 'lease-time' => '1d',
             ],
@@ -314,7 +312,7 @@ class MikrotikRouterConfigurator
             $client,
             $router,
             '/rest/ip/pool',
-            ['name' => 'mmutech-lan-pool'],
+            ['name' => $poolName],
             self::POOL_COMMENT,
             ['ranges' => $configuration['pool_range']],
             $correlationId,
@@ -328,7 +326,7 @@ class MikrotikRouterConfigurator
             self::DHCP_SERVER_COMMENT,
             [
                 'interface' => $configuration['bridge_name'],
-                'address-pool' => 'mmutech-lan-pool',
+                'address-pool' => $poolName,
                 'disabled' => 'no',
                 'lease-time' => '1d',
             ],
@@ -624,6 +622,11 @@ class MikrotikRouterConfigurator
         return $createdId;
     }
 
+    private function lanPoolName(Router $router): string
+    {
+        return RouterIdentity::fromRouter($router);
+    }
+
     /**
      * @param  array<string, string>  $settings
      */
@@ -804,6 +807,7 @@ class MikrotikRouterConfigurator
         string $correlationId,
     ): array {
         $checks = [];
+        $poolName = $this->lanPoolName($router);
         $interfaces = $this->getRows($client, $router, '/rest/interface', $correlationId);
         $bridgeExists = collect($interfaces)->contains(
             fn (array $interface): bool => ($interface['name'] ?? null) === $configuration['bridge_name']
@@ -855,7 +859,7 @@ class MikrotikRouterConfigurator
 
         $pools = $this->getRows($client, $router, '/rest/ip/pool', $correlationId);
         $checks['dhcp_pool'] = $this->check(
-            $this->containsMatching($pools, ['name' => 'mmutech-lan-pool', 'ranges' => $configuration['pool_range']]),
+            $this->containsMatching($pools, ['name' => $poolName, 'ranges' => $configuration['pool_range']]),
             'RouterOS DHCP pool range was read back.'
         );
 
@@ -864,7 +868,7 @@ class MikrotikRouterConfigurator
             $this->containsMatching($dhcpServers, [
                 'name' => 'mmutech-lan-dhcp',
                 'interface' => $configuration['bridge_name'],
-                'address-pool' => 'mmutech-lan-pool',
+                'address-pool' => $poolName,
                 'disabled' => 'no',
             ]),
             'RouterOS DHCP server is enabled on the LAN bridge.'

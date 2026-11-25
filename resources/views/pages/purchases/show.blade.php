@@ -11,6 +11,7 @@ new #[Layout('layouts::app')] #[Title('Purchase details')] class extends Compone
 
     public function mount(Purchase $purchase): void
     {
+        $this->authorize('view', $purchase);
         $this->purchase = $purchase->load(['customer', 'plan', 'router', 'transaction', 'vouchers']);
     }
 

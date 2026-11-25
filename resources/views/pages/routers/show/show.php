@@ -66,6 +66,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public string $managementCidrs = '';
 
+    public string $managementCidrDetectionNote = '';
+
     public bool $networkImpactConfirmed = false;
 
     #[Locked]
@@ -83,10 +85,12 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public bool $networkConfigurationDiscovered = false;
 
-    public string $hotspotServerName = HotspotServerConfiguration::NAME;
+    #[Locked]
+    public string $hotspotServerName = '';
 
     public string $hotspotServerInterface = '';
 
+    #[Locked]
     public string $hotspotServerPool = '';
 
     public string $hotspotServerProfile = 'default';
@@ -174,7 +178,6 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         }
 
         if (in_array($property, [
-            'hotspotServerName',
             'hotspotServerInterface',
             'hotspotServerPool',
             'hotspotServerProfile',
@@ -190,6 +193,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->router = $router;
         $this->new_api_username = $router->api_username;
 
+        $this->syncIdentityDerivedHotspotSettings();
+
         $networkJob = $router->jobs()
             ->where('type', 'configure_network')
             ->whereNotNull('payload->configuration')
@@ -199,7 +204,6 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->hotspotServerInterface = is_string($networkConfiguration['bridge_name'] ?? null)
             ? $networkConfiguration['bridge_name']
             : '';
-        $this->hotspotServerPool = 'mmutech-lan-pool';
 
         $this->markCurrentJobFailureAlertsShown();
     }
@@ -353,6 +357,34 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             $this->networkConfigurationDiscovered = false;
             $this->addError('networkDiscovery', $exception->getMessage());
         }
+    }
+
+    public function discoverManagementSourceCidrs(
+        RouterGateway $gateway,
+        CorrelationContext $correlation,
+    ): void {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('managementCidrs');
+        $this->managementCidrDetectionNote = '';
+        $this->networkCommands = [];
+        $this->networkImpactConfirmed = false;
+
+        try {
+            $cidrs = $gateway->managementSourceCidrs($this->router, $correlation->id());
+        } catch (RouterProbeException $exception) {
+            $this->addError('managementCidrs', $exception->getMessage());
+
+            return;
+        }
+
+        if ($cidrs === []) {
+            $this->addError('managementCidrs', 'No management source CIDRs were detected. Enter them manually.');
+
+            return;
+        }
+
+        $this->managementCidrs = implode("\n", $cidrs);
+        $this->managementCidrDetectionNote = "Last auto-detect resolved this server's source network to ".count($cidrs).' CIDR(s). Review before applying.';
     }
 
     public function applyBridgeConfiguration(
@@ -671,6 +703,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     ): void {
         $this->authorize('update', $this->router);
         $this->resetErrorBag('hotspotServerDiscovery');
+        $this->syncIdentityDerivedHotspotSettings();
 
         try {
             $this->hotspotServerInterfaces = $gateway->routerInterfaces($this->router, $correlation->id());
@@ -699,10 +732,6 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             $this->hotspotServerInterface = $bridge['name'] ?? $this->hotspotServerInterfaces[0]['name'] ?? '';
         }
 
-        if ($this->hotspotServerPool === '') {
-            $this->hotspotServerPool = $this->hotspotServerPools[0]['name'] ?? '';
-        }
-
         if ($this->hotspotServerProfile === '' || ! in_array($this->hotspotServerProfile, $this->hotspotServerProfiles, true)) {
             $this->hotspotServerProfile = $this->hotspotServerProfiles[0] ?? '';
         }
@@ -711,6 +740,12 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     public function openHotspotServerConfirmation(): void
     {
         $this->authorize('update', $this->router);
+        $this->resetErrorBag('hotspotServerConfiguration');
+
+        if (! $this->syncIdentityDerivedHotspotSettings()) {
+            return;
+        }
+
         $this->confirmationDialog = 'hotspot_server';
     }
 
@@ -720,6 +755,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     ): void {
         $this->authorize('update', $this->router);
         $this->resetErrorBag('hotspotServerConfiguration');
+
+        if (! $this->syncIdentityDerivedHotspotSettings()) {
+            return;
+        }
 
         if (! $this->hotspotServerDiscovered) {
             $this->addError('hotspotServerConfiguration', 'Discover the router HotSpot settings before configuring the server.');
@@ -784,6 +823,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->authorize('update', $this->router);
         $this->resetErrorBag('hotspotServerCommands');
         $this->hotspotServerCommands = [];
+
+        if (! $this->syncIdentityDerivedHotspotSettings()) {
+            return;
+        }
 
         if (! $this->hotspotServerDiscovered) {
             $this->addError('hotspotServerCommands', 'Discover the router HotSpot settings before generating terminal commands.');
@@ -984,15 +1027,32 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         ));
     }
 
+    private function syncIdentityDerivedHotspotSettings(): bool
+    {
+        try {
+            $identity = RouterIdentity::fromRouter($this->router);
+            $this->hotspotServerName = $identity;
+            $this->hotspotServerPool = $identity;
+
+            return true;
+        } catch (RouterProbeException $exception) {
+            $this->hotspotServerName = '';
+            $this->hotspotServerPool = '';
+            $this->addError('hotspotServerConfiguration', $exception->getMessage());
+
+            return false;
+        }
+    }
+
     /**
      * @return array<string, array<int, string|In>>
      */
     private function hotspotServerConfigurationRules(): array
     {
         return [
-            'hotspotServerName' => ['required', 'string', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/'],
+            'hotspotServerName' => ['required', 'string', 'max:'.RouterIdentity::MAX_LENGTH, 'regex:/^[^\x00-\x1F\x7F]+$/u'],
             'hotspotServerInterface' => ['required', 'string', Rule::in(array_column($this->hotspotServerInterfaces, 'name'))],
-            'hotspotServerPool' => ['required', 'string', Rule::in(array_column($this->hotspotServerPools, 'name'))],
+            'hotspotServerPool' => ['required', 'string', 'same:hotspotServerName', 'regex:/^[^\x00-\x1F\x7F]+$/u'],
             'hotspotServerProfile' => ['required', 'string', Rule::in($this->hotspotServerProfiles)],
         ];
     }
@@ -1001,9 +1061,10 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     private function hotspotServerConfigurationMessages(): array
     {
         return [
-            'hotspotServerName.regex' => 'Use 1 to 64 letters, numbers, dots, underscores, or hyphens; the name must start with a letter or number.',
+            'hotspotServerName.regex' => 'The router identity must be 1 to 64 characters and cannot contain control characters.',
             'hotspotServerInterface.in' => 'Select an interface discovered on this router.',
-            'hotspotServerPool.in' => 'Select an IP pool discovered on this router.',
+            'hotspotServerPool.same' => 'The address pool must match this router’s identity.',
+            'hotspotServerPool.regex' => 'The address pool must be 1 to 64 characters and cannot contain control characters.',
             'hotspotServerProfile.in' => 'Select a HotSpot server profile discovered on this router.',
         ];
     }

@@ -40,6 +40,11 @@ class Purchase extends Model
         ];
     }
 
+    public function getRouteKeyName(): string
+    {
+        return 'public_id';
+    }
+
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);

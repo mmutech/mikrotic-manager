@@ -33,6 +33,8 @@ class VoucherValiditySyncService
     {
         $now = Carbon::now();
 
+        $this->expireStatuses($now);
+
         Router::query()
             ->whereNotIn('status', [RouterStatus::Disabled->value, RouterStatus::Archived->value])
             ->whereHas('vouchers', fn (Builder $query): Builder => $this->eligibleVouchers($query, $now))
@@ -40,6 +42,41 @@ class VoucherValiditySyncService
             ->chunkById(100, function ($routers) use ($now): void {
                 foreach ($routers as $router) {
                     $this->syncRouter($router, $now);
+                }
+            });
+    }
+
+    private function expireStatuses(Carbon $now): void
+    {
+        $correlationId = (string) Str::uuid();
+
+        Voucher::query()
+            ->whereIn('lifecycle_status', [
+                VoucherLifecycleStatus::Active->value,
+                VoucherLifecycleStatus::Pending->value,
+            ])
+            ->whereNotNull('expires_at')
+            ->where('expires_at', '<=', $now)
+            ->orderBy('id')
+            ->chunkById(100, function ($vouchers) use ($now, $correlationId): void {
+                foreach ($vouchers as $voucher) {
+                    $updated = Voucher::query()
+                        ->whereKey($voucher->getKey())
+                        ->whereIn('lifecycle_status', [
+                            VoucherLifecycleStatus::Active->value,
+                            VoucherLifecycleStatus::Pending->value,
+                        ])
+                        ->whereNotNull('expires_at')
+                        ->where('expires_at', '<=', $now)
+                        ->update([
+                            'lifecycle_status' => VoucherLifecycleStatus::Expired,
+                            'last_synced_at' => $now,
+                        ]);
+
+                    if ($updated === 1) {
+                        $voucher->refresh();
+                        $this->audit->record('voucher.expired', $voucher, correlationId: $correlationId);
+                    }
                 }
             });
     }
@@ -235,14 +272,10 @@ class VoucherValiditySyncService
         $updated = Voucher::query()
             ->whereKey($voucher->getKey())
             ->where('provisioning_status', ProvisioningStatus::Provisioned->value)
-            ->whereIn('lifecycle_status', [
-                VoucherLifecycleStatus::Active->value,
-                VoucherLifecycleStatus::Pending->value,
-            ])
+            ->where('lifecycle_status', VoucherLifecycleStatus::Expired->value)
             ->whereNotNull('expires_at')
             ->where('expires_at', '<=', $now)
             ->update([
-                'lifecycle_status' => VoucherLifecycleStatus::Expired,
                 'provisioning_status' => ProvisioningStatus::Removed,
                 'last_synced_at' => $now,
             ]);
@@ -280,14 +313,21 @@ class VoucherValiditySyncService
     {
         return $query
             ->where('provisioning_status', ProvisioningStatus::Provisioned->value)
-            ->whereIn('lifecycle_status', [
-                VoucherLifecycleStatus::Active->value,
-                VoucherLifecycleStatus::Pending->value,
-            ])
             ->where(function (Builder $query) use ($now): void {
-                $query->whereNull('first_used_at')
+                $query->whereIn('lifecycle_status', [
+                    VoucherLifecycleStatus::Active->value,
+                    VoucherLifecycleStatus::Pending->value,
+                ])
+                    ->where(function (Builder $query) use ($now): void {
+                        $query->whereNull('first_used_at')
+                            ->orWhere(function (Builder $query) use ($now): void {
+                                $query->whereNotNull('expires_at')
+                                    ->where('expires_at', '<=', $now);
+                            });
+                    })
                     ->orWhere(function (Builder $query) use ($now): void {
-                        $query->whereNotNull('expires_at')
+                        $query->where('lifecycle_status', VoucherLifecycleStatus::Expired->value)
+                            ->whereNotNull('expires_at')
                             ->where('expires_at', '<=', $now);
                     });
             });

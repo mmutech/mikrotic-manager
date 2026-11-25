@@ -40,18 +40,18 @@ class RouterHotspotServerConfigurationTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('super-admin');
-        $router = Router::factory()->create();
+        $router = Router::factory()->create(['identity' => 'Branch-HQ']);
         $this->mockHotspotDiscoveryGateway();
         Bus::fake();
 
         $this->actingAs($user);
 
         Livewire::test('pages::routers.show', ['router' => $router])
+            ->assertSet('hotspotServerName', 'Branch-HQ')
+            ->assertSet('hotspotServerPool', 'Branch-HQ')
             ->call('discoverHotspotServerSettings')
             ->assertHasNoErrors()
-            ->set('hotspotServerName', 'branch-hotspot')
             ->set('hotspotServerInterface', 'bridge-lan')
-            ->set('hotspotServerPool', 'mmutech-lan-pool')
             ->set('hotspotServerProfile', 'default')
             ->call('openHotspotServerConfirmation')
             ->assertSet('confirmationDialog', 'hotspot_server')
@@ -67,9 +67,9 @@ class RouterHotspotServerConfigurationTest extends TestCase
 
         $this->assertSame(RouterJobStatus::Queued, $job->status);
         $this->assertSame([
-            'server_name' => 'branch-hotspot',
+            'server_name' => 'Branch-HQ',
             'interface' => 'bridge-lan',
-            'address_pool' => 'mmutech-lan-pool',
+            'address_pool' => 'Branch-HQ',
             'profile' => 'default',
         ], $job->payload);
     }
@@ -78,7 +78,7 @@ class RouterHotspotServerConfigurationTest extends TestCase
     {
         $user = User::factory()->create();
         $user->assignRole('super-admin');
-        $router = Router::factory()->create();
+        $router = Router::factory()->create(['identity' => 'Branch-HQ']);
         $this->mockHotspotDiscoveryGateway();
         Bus::fake();
 
@@ -89,7 +89,7 @@ class RouterHotspotServerConfigurationTest extends TestCase
             ->call('generateHotspotServerCommands')
             ->assertHasNoErrors()
             ->assertSee('/ip hotspot add')
-            ->assertSet('hotspotServerCommands.0', '/ip hotspot add name=mmutech-hotspot interface=bridge-lan address-pool=mmutech-lan-pool profile=default disabled=no');
+            ->assertSet('hotspotServerCommands.0', '/ip hotspot add name=Branch-HQ interface=bridge-lan address-pool=Branch-HQ profile=default disabled=no');
 
         Bus::assertNotDispatched(ConfigureRouterHotspotJob::class);
         $this->assertDatabaseMissing('router_jobs', [
@@ -98,13 +98,19 @@ class RouterHotspotServerConfigurationTest extends TestCase
         ]);
     }
 
-    public function test_the_job_stores_verification_and_succeeds_when_all_checks_pass(): void
+    public function test_the_job_rederives_managed_names_and_stores_verification(): void
     {
-        $router = Router::factory()->create();
+        $router = Router::factory()->create(['identity' => 'Branch-HQ']);
         $configuration = [
-            'server_name' => 'mmutech-hotspot',
+            'server_name' => 'Branch-HQ',
             'interface' => 'bridge-lan',
-            'address_pool' => 'mmutech-lan-pool',
+            'address_pool' => 'Branch-HQ',
+            'profile' => 'default',
+        ];
+        $stalePayload = [
+            'server_name' => 'old-server',
+            'interface' => 'bridge-lan',
+            'address_pool' => 'old-pool',
             'profile' => 'default',
         ];
         $checks = [
@@ -117,7 +123,7 @@ class RouterHotspotServerConfigurationTest extends TestCase
             'router_id' => $router->getKey(),
             'type' => 'configure_hotspot',
             'status' => RouterJobStatus::Queued,
-            'payload' => $configuration,
+            'payload' => $stalePayload,
             'correlation_id' => 'correlation-id',
         ]);
         $gateway = $this->createMock(RouterGateway::class);
@@ -142,15 +148,15 @@ class RouterHotspotServerConfigurationTest extends TestCase
 
     public function test_the_job_fails_when_read_back_verification_finds_a_mismatch(): void
     {
-        $router = Router::factory()->create();
+        $router = Router::factory()->create(['identity' => 'Branch-HQ']);
         $job = RouterJob::create([
             'router_id' => $router->getKey(),
             'type' => 'configure_hotspot',
             'status' => RouterJobStatus::Queued,
             'payload' => [
-                'server_name' => 'mmutech-hotspot',
+                'server_name' => 'Branch-HQ',
                 'interface' => 'bridge-lan',
-                'address_pool' => 'mmutech-lan-pool',
+                'address_pool' => 'Branch-HQ',
                 'profile' => 'default',
             ],
         ]);
@@ -176,7 +182,7 @@ class RouterHotspotServerConfigurationTest extends TestCase
             ['name' => 'bridge-lan', 'type' => 'bridge', 'running' => true, 'disabled' => false],
         ]);
         $gateway->method('ipPools')->willReturn([
-            ['name' => 'mmutech-lan-pool', 'ranges' => '192.168.10.20-192.168.10.200'],
+            ['name' => 'Branch-HQ', 'ranges' => '192.168.10.20-192.168.10.200'],
         ]);
         $gateway->method('hotspotProfiles')->willReturn([['name' => 'default']]);
         $gateway->method('hotspotServers')->willReturn([]);

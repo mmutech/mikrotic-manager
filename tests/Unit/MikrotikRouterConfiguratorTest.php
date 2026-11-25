@@ -24,7 +24,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
 
     public function test_it_generates_terminal_commands_for_dhcp_nat_and_ordered_firewall_rules(): void
     {
-        $router = new Router(['rest_port' => 8729]);
+        $router = $this->router(['rest_port' => 8729]);
 
         $commands = $this->configurator()->terminalCommands($router, $this->validConfiguration());
         $firewallCommands = array_values(array_filter(
@@ -35,6 +35,14 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $this->assertSame(
             '/ip address add address=192.168.10.1/24 interface=bridge-lan disabled=no comment="MMUTech managed LAN address"',
             $commands[0],
+        );
+        $this->assertContains(
+            '/ip pool add name=Branch-HQ ranges=192.168.10.20-192.168.10.200 comment="MMUTech managed LAN DHCP pool"',
+            $commands,
+        );
+        $this->assertContains(
+            '/ip dhcp-server add name=mmutech-lan-dhcp interface=bridge-lan address-pool=Branch-HQ lease-time=1d disabled=no comment="MMUTech managed LAN DHCP server"',
+            $commands,
         );
         $this->assertContains(
             '/ip firewall nat add chain=srcnat action=masquerade src-address=192.168.10.0/24 out-interface=ether1 disabled=no comment="MMUTech managed LAN masquerade"',
@@ -55,7 +63,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $configuration['management_impact_confirmed'] = false;
 
         $this->expectException(RouterProbeException::class);
-        $this->configurator()->terminalCommands(new Router(['rest_port' => 443]), $configuration);
+        $this->configurator()->terminalCommands($this->router(), $configuration);
     }
 
     public function test_it_quotes_routeros_interface_names_with_spaces(): void
@@ -63,13 +71,29 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $configuration = $this->validConfiguration();
         $configuration['wan_interface'] = 'WAN uplink';
 
-        $commands = $this->configurator()->terminalCommands(new Router(['rest_port' => 443]), $configuration);
+        $commands = $this->configurator()->terminalCommands($this->router(), $configuration);
         $natCommand = collect($commands)->first(
             fn (string $command): bool => str_starts_with($command, '/ip firewall nat add ')
         );
 
         $this->assertIsString($natCommand);
         $this->assertStringContainsString('out-interface="WAN uplink"', $natCommand);
+    }
+
+    public function test_it_uses_the_exact_router_identity_for_the_lan_pool(): void
+    {
+        $router = $this->router(['identity' => 'Branch HQ']);
+
+        $commands = $this->configurator()->terminalCommands($router, $this->validConfiguration());
+
+        $this->assertContains(
+            '/ip pool add name="Branch HQ" ranges=192.168.10.20-192.168.10.200 comment="MMUTech managed LAN DHCP pool"',
+            $commands,
+        );
+        $this->assertContains(
+            '/ip dhcp-server add name=mmutech-lan-dhcp interface=bridge-lan address-pool="Branch HQ" lease-time=1d disabled=no comment="MMUTech managed LAN DHCP server"',
+            $commands,
+        );
     }
 
     public function test_it_rejects_control_characters_in_terminal_interface_names(): void
@@ -121,7 +145,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $configuration['management_impact_confirmed'] = false;
 
         $this->expectException(RouterProbeException::class);
-        $configurator->configure(new Router(['rest_port' => 443]), $configuration, 'correlation-id');
+        $configurator->configure($this->router(), $configuration, 'correlation-id');
     }
 
     public function test_it_configures_idempotently_and_verifies_routeros_readback(): void
@@ -156,7 +180,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
         ];
         $writes = [];
         $configurator = $this->configuratorWithRouterState($state, $writes);
-        $router = new Router(['rest_port' => 443]);
+        $router = $this->router();
 
         $checks = $configurator->configure($router, $this->validConfiguration(), 'correlation-id');
         $writeCount = count($writes);
@@ -164,6 +188,10 @@ class MikrotikRouterConfiguratorTest extends TestCase
 
         $this->assertSame(14, $writeCount);
         $this->assertCount($writeCount, $writes);
+        $poolWrite = collect($writes)->firstWhere('endpoint', '/rest/ip/pool');
+        $dhcpServerWrite = collect($writes)->firstWhere('endpoint', '/rest/ip/dhcp-server');
+        $this->assertSame('Branch-HQ', $poolWrite['payload']['name']);
+        $this->assertSame('Branch-HQ', $dhcpServerWrite['payload']['address-pool']);
         $this->assertSame('passed', $checks['firewall']['status']);
         $this->assertSame('passed', $checks['firewall_precedence']['status']);
         $this->assertSame('warning', $checks['firewall_conflicts']['status']);
@@ -175,6 +203,8 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $verificationChecks = $configurator->verify($router, $this->validConfiguration(), 'correlation-id');
 
         $this->assertSame($writeCount, count($writes));
+        $this->assertSame('passed', $verificationChecks['dhcp_pool']['status']);
+        $this->assertSame('passed', $verificationChecks['dhcp_server']['status']);
         $this->assertSame('passed', $verificationChecks['firewall']['status']);
         $forwardWanRule = collect($state['/rest/ip/firewall/filter'])
             ->firstWhere('comment', 'MMUTech managed firewall forward drop WAN');
@@ -209,7 +239,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $writes = [];
         $configurator = $this->configuratorWithRouterState($state, $writes);
         $checks = $configurator->configure(
-            new Router(['rest_port' => 443]),
+            $this->router(),
             $this->validConfiguration(),
             'correlation-id',
         );
@@ -242,7 +272,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
 
         try {
             $configurator->configure(
-                new Router(['rest_port' => 443]),
+                $this->router(),
                 $this->validConfiguration(),
                 'correlation-id',
             );
@@ -252,6 +282,16 @@ class MikrotikRouterConfiguratorTest extends TestCase
         }
 
         $this->assertSame([], $writes);
+    }
+
+    /** @param array<string, mixed> $attributes */
+    private function router(array $attributes = []): Router
+    {
+        return new Router(array_merge([
+            'name' => 'Branch Router',
+            'identity' => 'Branch-HQ',
+            'rest_port' => 443,
+        ], $attributes));
     }
 
     private function configurator(): MikrotikRouterConfigurator

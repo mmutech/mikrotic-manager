@@ -62,8 +62,12 @@ class ConfigureRouterHotspotJob implements ShouldQueue
 
         $jobs->markRunning($job);
 
+        $payload = is_array($job->payload) ? $job->payload : [];
+
         try {
-            $configuration = HotspotServerConfiguration::normalize($job->payload ?? []);
+            $payload['server_name'] = HotspotServerConfiguration::nameFromRouter($router);
+            $payload['address_pool'] = HotspotServerConfiguration::addressPoolFromRouter($router);
+            $configuration = HotspotServerConfiguration::normalize($payload);
         } catch (RouterProbeException $exception) {
             $jobs->markFailed($job, $exception);
 
@@ -71,7 +75,6 @@ class ConfigureRouterHotspotJob implements ShouldQueue
         }
 
         $checks = $gateway->configureHotspotServer($router, $configuration, $correlationId);
-        $payload = is_array($job->payload) ? $job->payload : [];
         $payload['configuration'] = $configuration;
         $payload['verification'] = $checks;
         $payload['verification_at'] = now()->toIso8601String();

@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Exceptions\RouterProbeException;
+use App\Models\Router;
 use App\Support\RouterIdentity;
 use PHPUnit\Framework\TestCase;
 
@@ -38,5 +39,13 @@ class RouterIdentityTest extends TestCase
         $this->expectException(RouterProbeException::class);
 
         RouterIdentity::normalize("Branch\nRouter", 'Fallback');
+    }
+
+    public function test_it_resolves_the_exact_identity_from_a_router(): void
+    {
+        $router = new Router(['name' => 'Branch Router', 'identity' => '  JEDC-HQ  ']);
+
+        $this->assertSame('JEDC-HQ', RouterIdentity::fromRouter($router));
+        $this->assertSame('Branch Router', RouterIdentity::fromRouter(new Router(['name' => 'Branch Router'])));
     }
 }

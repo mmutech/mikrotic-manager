@@ -3,10 +3,31 @@
 namespace App\Support;
 
 use App\Exceptions\RouterProbeException;
+use App\Models\Router;
 
 final class HotspotServerConfiguration
 {
-    public const NAME = 'mmutech-hotspot';
+    /**
+     * Resolve the HotSpot server name from the router identity.
+     *
+     * RouterOS identity is the single source of truth for the managed server
+     * name. An empty identity falls back to the router name.
+     */
+    public static function nameFromRouter(Router $router): string
+    {
+        return RouterIdentity::fromRouter($router);
+    }
+
+    /**
+     * Resolve the HotSpot address pool from the router identity.
+     *
+     * The managed network provisioning creates the DHCP pool with this exact
+     * identity, so the HotSpot server must use the same name.
+     */
+    public static function addressPoolFromRouter(Router $router): string
+    {
+        return RouterIdentity::fromRouter($router);
+    }
 
     /**
      * @param  array<string, mixed>  $configuration
@@ -14,13 +35,18 @@ final class HotspotServerConfiguration
      */
     public static function normalize(array $configuration): array
     {
-        $serverName = $configuration['server_name'] ?? self::NAME;
+        $serverName = $configuration['server_name'] ?? null;
+        $serverName = is_string($serverName) ? trim($serverName) : '';
         $interface = $configuration['interface'] ?? null;
+        $interface = is_string($interface) ? trim($interface) : null;
         $addressPool = $configuration['address_pool'] ?? null;
+        $addressPool = is_string($addressPool) ? trim($addressPool) : null;
         $profile = $configuration['profile'] ?? null;
+        $profile = is_string($profile) ? trim($profile) : null;
 
-        if (! is_string($serverName) || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $serverName) !== 1) {
-            throw RouterProbeException::configuration('The HotSpot server name must use 1 to 64 letters, numbers, dots, underscores, or hyphens.');
+        if ($serverName === '' || mb_strlen($serverName) > RouterIdentity::MAX_LENGTH
+            || preg_match('/[\x00-\x1F\x7F]/u', $serverName) === 1) {
+            throw RouterProbeException::configuration('The HotSpot server name must be the router identity, 1 to 64 characters, and cannot contain control characters.');
         }
 
         foreach ([
@@ -28,16 +54,20 @@ final class HotspotServerConfiguration
             'address_pool' => $addressPool,
             'profile' => $profile,
         ] as $field => $value) {
-            if (! is_string($value) || trim($value) === '' || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            if ($value === null || $value === '' || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
                 throw RouterProbeException::configuration('Select a valid value for the HotSpot server '.$field.'.');
             }
         }
 
+        if ($addressPool !== $serverName) {
+            throw RouterProbeException::configuration('The HotSpot address pool must be the router identity.');
+        }
+
         return [
             'server_name' => $serverName,
-            'interface' => trim($interface),
-            'address_pool' => trim($addressPool),
-            'profile' => trim($profile),
+            'interface' => (string) $interface,
+            'address_pool' => (string) $addressPool,
+            'profile' => (string) $profile,
         ];
     }
 
