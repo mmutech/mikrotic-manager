@@ -7,6 +7,7 @@ use App\Enums\ProvisioningStatus;
 use App\Enums\RouterErrorCategory;
 use App\Enums\VoucherLifecycleStatus;
 use App\Exceptions\RouterProbeException;
+use App\Models\Router;
 use App\Models\RouterPlanProfile;
 use App\Models\Voucher;
 use App\Services\AuditLogger;
@@ -16,8 +17,9 @@ use App\Support\HotspotRateLimit;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Mivo\LaravelMikrotikRos7\Services\HotspotManager;
+use Mivo\MikrotikRos7\Client;
 use Throwable;
+use UnexpectedValueException;
 
 class VoucherProvisioningService
 {
@@ -52,7 +54,12 @@ class VoucherProvisioningService
         $voucher->refresh();
 
         $router = $voucher->router;
-        $putStarted = null;
+        $routerCallAttempted = false;
+        $operation = [
+            'method' => 'PUT',
+            'endpoint' => '/rest/ip/hotspot/user',
+            'started' => hrtime(true),
+        ];
 
         try {
             if (! $voucher->canBeProvisioned()) {
@@ -83,8 +90,8 @@ class VoucherProvisioningService
                 throw RouterProbeException::configuration('A finite voucher data allowance must be greater than zero bytes.');
             }
 
-            if ($voucher->time_allowance_seconds !== null && $voucher->time_allowance_seconds <= 0) {
-                throw RouterProbeException::configuration('A voucher connected-time allowance must be greater than zero seconds.');
+            if ($voucher->time_allowance_seconds !== null && $voucher->time_allowance_seconds < 0) {
+                throw RouterProbeException::configuration('A voucher connected-time allowance cannot be negative.');
             }
 
             if (($voucher->upload_speed_kbps === null) !== ($voucher->download_speed_kbps === null)) {
@@ -154,26 +161,63 @@ class VoucherProvisioningService
                 $data['limit-bytes-total'] = (string) $voucher->data_allowance_bytes;
             }
 
+            // RouterOS uses 0s to mean no connected-time limit. Sending it
+            // explicitly clears any limit left on a reprovisioned user.
             if ($voucher->time_allowance_seconds !== null) {
                 $data['limit-uptime'] = $voucher->time_allowance_seconds.'s';
             }
 
             $client = $this->connections->make($router);
-            $hotspot = new HotspotManager($client);
-            $putStarted = hrtime(true);
-            $hotspot->addUser($data);
-            $latency = $this->elapsedMs($putStarted);
-
-            $this->recorder->success(
+            $routerCallAttempted = true;
+            $existingUser = $this->findHotspotUser(
+                $client,
                 $router,
-                'PUT',
-                '/rest/ip/hotspot/user',
-                $latency,
-                200,
-                ['name' => $voucher->username],
-                ['profile' => $data['profile'] ?? null],
-                $correlationId
+                $voucher->username,
+                $correlationId,
+                $operation,
             );
+
+            if ($existingUser !== null) {
+                $userId = $this->routerOsId($existingUser['.id'] ?? null);
+                $endpoint = '/rest/ip/hotspot/user/'.$userId;
+                $data['disabled'] = 'no';
+
+                $operation = [
+                    'method' => 'PATCH',
+                    'endpoint' => $endpoint,
+                    'started' => hrtime(true),
+                ];
+                $client->patch($endpoint, $data);
+
+                $this->recorder->success(
+                    $router,
+                    'PATCH',
+                    $endpoint,
+                    $this->elapsedMs($operation['started']),
+                    200,
+                    ['name' => $voucher->username],
+                    ['disabled' => 'no'],
+                    $correlationId
+                );
+            } else {
+                $operation = [
+                    'method' => 'PUT',
+                    'endpoint' => '/rest/ip/hotspot/user',
+                    'started' => hrtime(true),
+                ];
+                $client->put('/rest/ip/hotspot/user', $data);
+
+                $this->recorder->success(
+                    $router,
+                    'PUT',
+                    '/rest/ip/hotspot/user',
+                    $this->elapsedMs($operation['started']),
+                    200,
+                    ['name' => $voucher->username],
+                    ['profile' => $data['profile'] ?? null],
+                    $correlationId
+                );
+            }
 
             $voucher->update([
                 'provisioning_status' => ProvisioningStatus::Provisioned,
@@ -187,13 +231,13 @@ class VoucherProvisioningService
 
             $this->audit->record('voucher.provisioned', $voucher, actor: auth()->user(), correlationId: $correlationId);
         } catch (Throwable $e) {
-            if ($putStarted !== null) {
+            if ($routerCallAttempted) {
                 $this->recorder->failure(
                     $router,
-                    'PUT',
-                    '/rest/ip/hotspot/user',
-                    $this->elapsedMs($putStarted),
-                    $e instanceof RouterProbeException ? $e->category : RouterErrorCategory::Unknown,
+                    $operation['method'],
+                    $operation['endpoint'],
+                    $this->elapsedMs($operation['started']),
+                    $this->errorCategory($e),
                     $e->getMessage(),
                     null,
                     ['name' => $voucher->username],
@@ -217,42 +261,146 @@ class VoucherProvisioningService
         $correlationId ??= (string) Str::uuid();
         $voucher->loadMissing(['router']);
 
-        $started = hrtime(true);
-        try {
-            $client = $this->connections->make($voucher->router);
-            $hotspot = new HotspotManager($client);
-            $hotspot->removeUser($voucher->username);
-            $latency = $this->elapsedMs($started);
+        $router = $voucher->router;
+        $username = $voucher->username;
+        $sessionsDisconnected = 0;
+        $userDisabled = false;
+        $operation = [
+            'method' => 'GET',
+            'endpoint' => '/rest/ip/hotspot/user',
+            'started' => hrtime(true),
+        ];
 
-            $this->recorder->success(
-                $voucher->router,
-                'DELETE',
-                '/rest/ip/hotspot/user',
-                $latency,
-                200,
-                ['name' => $voucher->username],
-                [],
-                $correlationId
+        try {
+            $client = $this->connections->make($router);
+
+            $user = $this->findHotspotUser(
+                $client,
+                $router,
+                $username,
+                $correlationId,
+                $operation,
             );
 
+            if ($user !== null) {
+                $userId = $this->routerOsId($user['.id'] ?? null);
+                $endpoint = '/rest/ip/hotspot/user/'.$userId;
+
+                $operation = [
+                    'method' => 'PATCH',
+                    'endpoint' => $endpoint,
+                    'started' => hrtime(true),
+                ];
+                $client->patch($endpoint, ['disabled' => 'yes']);
+
+                $this->recorder->success(
+                    $router,
+                    'PATCH',
+                    $endpoint,
+                    $this->elapsedMs($operation['started']),
+                    200,
+                    ['name' => $username],
+                    ['disabled' => 'yes'],
+                    $correlationId
+                );
+
+                $userDisabled = true;
+            }
+
+            $activeSessions = $this->activeHotspotSessions(
+                $client,
+                $router,
+                $correlationId,
+                $operation,
+            );
+
+            foreach ($activeSessions as $session) {
+                if (! $this->isSessionFor($session, $username)) {
+                    continue;
+                }
+
+                $sessionId = $this->routerOsId($session['.id'] ?? null);
+                $endpoint = '/rest/ip/hotspot/active/'.$sessionId;
+
+                $operation = [
+                    'method' => 'DELETE',
+                    'endpoint' => $endpoint,
+                    'started' => hrtime(true),
+                ];
+                $client->delete($endpoint);
+
+                $this->recorder->success(
+                    $router,
+                    'DELETE',
+                    $endpoint,
+                    $this->elapsedMs($operation['started']),
+                    200,
+                    ['name' => $username],
+                    [],
+                    $correlationId
+                );
+
+                $sessionsDisconnected++;
+            }
+
+            $verifiedUser = $this->findHotspotUser(
+                $client,
+                $router,
+                $username,
+                $correlationId,
+                $operation,
+            );
+            $verifiedSessions = $this->activeHotspotSessions(
+                $client,
+                $router,
+                $correlationId,
+                $operation,
+            );
+
+            foreach ($verifiedSessions as $session) {
+                if ($this->isSessionFor($session, $username)) {
+                    throw RouterProbeException::configuration(
+                        'Revocation verification failed: the HotSpot user still has an active session.'
+                    );
+                }
+            }
+
+            if ($verifiedUser !== null && ! $this->routerOsBoolean($verifiedUser['disabled'] ?? false)) {
+                throw RouterProbeException::configuration(
+                    'Revocation verification failed: the HotSpot user is still enabled on the router.'
+                );
+            }
+
+            $now = Carbon::now();
+
             $voucher->update([
-                'provisioning_status' => ProvisioningStatus::Removed,
+                'provisioning_status' => ProvisioningStatus::Disabled,
                 'lifecycle_status' => VoucherLifecycleStatus::Revoked,
-                'revoked_at' => Carbon::now(),
-                'last_synced_at' => Carbon::now(),
+                'revoked_at' => $now,
+                'revoked_by' => auth()->id(),
+                'last_synced_at' => $now,
             ]);
 
-            $this->audit->record('voucher.revoked', $voucher, actor: auth()->user(), correlationId: $correlationId);
+            $this->audit->record(
+                'voucher.revoked',
+                $voucher,
+                metadata: [
+                    'user_disabled' => $userDisabled,
+                    'sessions_disconnected' => $sessionsDisconnected,
+                ],
+                actor: auth()->user(),
+                correlationId: $correlationId
+            );
         } catch (Throwable $e) {
             $this->recorder->failure(
-                $voucher->router,
-                'DELETE',
-                '/rest/ip/hotspot/user',
-                $this->elapsedMs($started),
-                RouterErrorCategory::Unknown,
+                $router,
+                $operation['method'],
+                $operation['endpoint'],
+                $this->elapsedMs($operation['started']),
+                $this->errorCategory($e),
                 $e->getMessage(),
                 null,
-                ['name' => $voucher->username],
+                ['name' => $username],
                 [],
                 $correlationId
             );
@@ -272,6 +420,105 @@ class VoucherProvisioningService
 
             throw $e;
         }
+    }
+
+    /**
+     * @param  array{method: string, endpoint: string, started: int}  $operation
+     * @return array<string, mixed>|null
+     */
+    private function findHotspotUser(
+        Client $client,
+        Router $router,
+        string $username,
+        string $correlationId,
+        array &$operation,
+    ): ?array {
+        $operation = [
+            'method' => 'GET',
+            'endpoint' => '/rest/ip/hotspot/user',
+            'started' => hrtime(true),
+        ];
+
+        $users = $client->get('/rest/ip/hotspot/user', ['name' => $username]);
+
+        $this->recorder->success(
+            $router,
+            'GET',
+            '/rest/ip/hotspot/user',
+            $this->elapsedMs($operation['started']),
+            200,
+            ['name' => $username],
+            ['found' => $users !== []],
+            $correlationId
+        );
+
+        return $users[0] ?? null;
+    }
+
+    /**
+     * @param  array{method: string, endpoint: string, started: int}  $operation
+     * @return array<int, array<string, mixed>>
+     */
+    private function activeHotspotSessions(
+        Client $client,
+        Router $router,
+        string $correlationId,
+        array &$operation,
+    ): array {
+        $operation = [
+            'method' => 'GET',
+            'endpoint' => '/rest/ip/hotspot/active',
+            'started' => hrtime(true),
+        ];
+
+        $sessions = $client->get('/rest/ip/hotspot/active');
+
+        $this->recorder->success(
+            $router,
+            'GET',
+            '/rest/ip/hotspot/active',
+            $this->elapsedMs($operation['started']),
+            200,
+            [],
+            ['count' => count($sessions)],
+            $correlationId
+        );
+
+        return $sessions;
+    }
+
+    /**
+     * @param  array<string, mixed>  $session
+     */
+    private function isSessionFor(array $session, string $username): bool
+    {
+        return ($session['user'] ?? null) === $username
+            || ($session['username'] ?? null) === $username;
+    }
+
+    private function routerOsId(mixed $id): string
+    {
+        if (! is_string($id) || preg_match('/\A[\w.*-]+\z/D', $id) !== 1) {
+            throw new UnexpectedValueException('A RouterOS entry has an invalid .id.');
+        }
+
+        return $id;
+    }
+
+    private function routerOsBoolean(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return in_array($value, [1, '1', 'true', 'yes'], true);
+    }
+
+    private function errorCategory(Throwable $exception): RouterErrorCategory
+    {
+        return $exception instanceof RouterProbeException
+            ? $exception->category
+            : RouterErrorCategory::Unknown;
     }
 
     private function elapsedMs(int $started): int

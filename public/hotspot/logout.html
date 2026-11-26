@@ -1,0 +1,195 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#1d4ed8">
+
+    <title>JEDC Wi-Fi | Disconnected</title>
+
+    <style>
+        :root {
+            font-family: Inter, system-ui, -apple-system,
+                BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #172554;
+            background: #eff6ff;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background:
+                radial-gradient(ellipse at 15% 10%,
+                    rgb(191 219 254 / 75%), transparent 42%),
+                radial-gradient(ellipse at 90% 90%,
+                    rgb(199 210 254 / 65%), transparent 38%),
+                #f8fafc;
+        }
+
+        main {
+            width: min(100%, 420px);
+            padding: 36px;
+            border: 1px solid #dbeafe;
+            border-radius: 24px;
+            background: #fff;
+            box-shadow: 0 24px 64px rgb(30 64 175 / 12%);
+            text-align: center;
+        }
+
+        .brand {
+            display: grid;
+            width: 52px;
+            height: 52px;
+            place-items: center;
+            margin: 0 auto 24px;
+            border-radius: 16px;
+            background: #1d4ed8;
+            color: white;
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        .logout-icon {
+            display: grid;
+            width: 64px;
+            height: 64px;
+            place-items: center;
+            margin: 0 auto 20px;
+            border-radius: 50%;
+            background: #fee2e2;
+            color: #dc2626;
+            font-size: 30px;
+            font-weight: 700;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            color: #2563eb;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 0;
+            color: #0f172a;
+            font-size: clamp(26px, 7vw, 32px);
+            letter-spacing: -.04em;
+        }
+
+        .intro {
+            margin: 12px 0 24px;
+            color: #64748b;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .info {
+            padding: 16px;
+            border: 1px solid #dbeafe;
+            border-radius: 14px;
+            background: #eff6ff;
+            text-align: left;
+        }
+
+        .info-label {
+            margin: 0 0 5px;
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .info-value {
+            margin: 0;
+            color: #1e40af;
+            font-size: 15px;
+            font-weight: 700;
+            overflow-wrap: anywhere;
+        }
+
+        .login-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-height: 50px;
+            margin-top: 24px;
+            border: 0;
+            border-radius: 12px;
+            background: #1d4ed8;
+            color: white;
+            cursor: pointer;
+            font: inherit;
+            font-size: 15px;
+            font-weight: 700;
+            text-decoration: none;
+            transition: background .2s ease;
+        }
+
+        .login-button:hover {
+            background: #1e40af;
+        }
+
+        .help {
+            margin: 20px 0 0;
+            color: #64748b;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 480px) {
+            main {
+                padding: 28px 22px;
+                border-radius: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<main>
+
+    <div class="brand" aria-hidden="true">JEDC</div>
+
+    <div class="logout-icon" aria-hidden="true">
+        &#10005;
+    </div>
+
+    <p class="eyebrow">HQ Wi-Fi</p>
+
+    <h1>You are disconnected</h1>
+
+    <p class="intro">
+        You have successfully disconnected from
+        the JEDC Wi-Fi network.
+    </p>
+
+    <div class="info">
+        <p class="info-label">Previous voucher</p>
+        <p class="info-value">$(username)</p>
+    </div>
+
+    <a href="$(link-login)" class="login-button">
+        Connect Again
+    </a>
+
+    <p class="help">
+        Thank you for using JEDC Wi-Fi.
+        We hope to see you again.
+    </p>
+
+</main>
+
+</body>
+</html>

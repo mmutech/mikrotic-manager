@@ -39,7 +39,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
 
     public string $validity_days = '';
 
-    public string $time_allowance_seconds = '';
+    public string $time_allowance_seconds = '0';
 
     public string $upload_speed_kbps = '';
 
@@ -159,7 +159,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
             'data_allowance_mb' => ['exclude_if:is_unlimited,true', 'required', 'integer', 'min:1'],
             'is_unlimited' => ['boolean'],
             'validity_days' => ['nullable', 'integer', 'min:1'],
-            'time_allowance_seconds' => ['nullable', 'integer', 'min:1', 'max:4294967295'],
+            'time_allowance_seconds' => ['required', 'integer', 'min:0', 'max:4294967295'],
             'upload_speed_kbps' => ['nullable', 'integer', 'min:1', 'max:4294967295', 'required_with:download_speed_kbps'],
             'download_speed_kbps' => ['nullable', 'integer', 'min:1', 'max:4294967295', 'required_with:upload_speed_kbps'],
             'is_active' => ['boolean'],
@@ -176,7 +176,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
                 'is_unlimited' => $validated['is_unlimited'],
                 'data_allowance_bytes' => $validated['is_unlimited'] ? null : ((int) $validated['data_allowance_mb'] * 1024 * 1024),
                 'validity_seconds' => ! empty($validated['validity_days']) ? (int) $validated['validity_days'] * 86400 : null,
-                'time_allowance_seconds' => $validated['time_allowance_seconds'] !== null ? (int) $validated['time_allowance_seconds'] : null,
+                'time_allowance_seconds' => (int) $validated['time_allowance_seconds'],
                 'upload_speed_kbps' => filled($validated['upload_speed_kbps']) ? (int) $validated['upload_speed_kbps'] : null,
                 'download_speed_kbps' => filled($validated['download_speed_kbps']) ? (int) $validated['download_speed_kbps'] : null,
                 'is_active' => $validated['is_active'],
@@ -207,6 +207,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
 
         return $this->view([
             'routers' => $routers,
+            'timeAllowanceOptions' => Plan::connectedTimeOptions(),
         ])->title('Create plan');
     }
 };
@@ -285,17 +286,24 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
         <div class="grid gap-4 sm:grid-cols-3">
             <div>
                 <label class="mm-label">Maximum connected time (seconds)</label>
-                <input type="number" wire:model="time_allowance_seconds" min="1" class="mm-input">
+                <select wire:model="time_allowance_seconds" class="mm-input">
+                    @foreach ($timeAllowanceOptions as $value => $label)
+                        <option value="{{ $value }}">{{ $value }} — {{ $label }}</option>
+                    @endforeach
+                    @if ($time_allowance_seconds !== '' && ! array_key_exists($time_allowance_seconds, $timeAllowanceOptions))
+                        <option value="{{ $time_allowance_seconds }}">Custom limit — {{ $time_allowance_seconds }} second(s)</option>
+                    @endif
+                </select>
                 @error('time_allowance_seconds') <p class="mm-error">{{ $message }}</p> @enderror
             </div>
             <div>
                 <label class="mm-label">Upload limit (kbps)</label>
-                <input type="number" wire:model="upload_speed_kbps" min="1" readonly class="mm-input bg-slate-50">
+                <input type="number" wire:model="upload_speed_kbps" min="1" readonly class="mm-input bg-slate-50" disabled>
                 @error('upload_speed_kbps') <p class="mm-error">{{ $message }}</p> @enderror
             </div>
             <div>
                 <label class="mm-label">Download limit (kbps)</label>
-                <input type="number" wire:model="download_speed_kbps" min="1" readonly class="mm-input bg-slate-50">
+                <input type="number" wire:model="download_speed_kbps" min="1" readonly class="mm-input bg-slate-50" disabled>
                 @error('download_speed_kbps') <p class="mm-error">{{ $message }}</p> @enderror
             </div>
             <p class="text-xs text-slate-500">Speed limits are read from the selected RouterOS profile. This does not change the router.</p>

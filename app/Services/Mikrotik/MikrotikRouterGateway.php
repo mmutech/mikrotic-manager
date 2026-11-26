@@ -12,6 +12,7 @@ use App\Services\RouterConnectionFactory;
 use App\Support\HotspotRateLimit;
 use App\Support\HotspotServerConfiguration;
 use App\Support\Ipv4Cidr;
+use App\Support\RouterIdentity;
 use InvalidArgumentException;
 use Mivo\LaravelMikrotikRos7\Services\SystemManager;
 use Mivo\MikrotikRos7\Client;
@@ -41,6 +42,22 @@ class MikrotikRouterGateway implements RouterGateway
     private const NETWORK_MANAGED_COMMENT_PREFIX = 'MMUTech managed ';
 
     private const MANAGED_FIREWALL_COMMENT_PREFIX = 'MMUTech managed firewall ';
+
+    private const MANAGED_ADDRESS_COMMENT = 'MMUTech managed LAN address';
+
+    private const MANAGED_POOL_COMMENT = 'MMUTech managed LAN DHCP pool';
+
+    private const MANAGED_DHCP_SERVER_COMMENT = 'MMUTech managed LAN DHCP server';
+
+    private const MANAGED_DHCP_NETWORK_COMMENT = 'MMUTech managed LAN DHCP network';
+
+    private const MANAGED_NAT_COMMENT = 'MMUTech managed LAN masquerade';
+
+    private const MAX_IMPORT_FILE_BYTES = 61439;
+
+    private const FILE_READ_CHUNK_BYTES = 32768;
+
+    private const MAX_EXPORT_FILE_BYTES = 5_242_880;
 
     public function __construct(
         private readonly RouterConnectionFactory $connections,
@@ -409,24 +426,41 @@ class MikrotikRouterGateway implements RouterGateway
         return count($sources) === 1 ? $sources[0] : null;
     }
 
+    /**
+     * @param  array<int, string>  $interfaces
+     * @param  array<int, string>  $interfacesToRemove
+     */
     public function configureBridge(
         Router $router,
         string $bridgeName,
         array $interfaces,
         string $correlationId,
+        array $interfacesToRemove = [],
     ): void {
         if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,31}\z/', $bridgeName) !== 1) {
             throw RouterProbeException::configuration('The bridge name must use 1 to 32 letters, numbers, dots, underscores, or hyphens.');
         }
 
-        foreach ($interfaces as $interface) {
-            if (! is_string($interface) || $interface === '') {
-                throw RouterProbeException::configuration('Every selected interface must have a valid name.');
+        foreach ([$interfaces, $interfacesToRemove] as $selection) {
+            foreach ($selection as $interface) {
+                if (! is_string($interface) || $interface === '') {
+                    throw RouterProbeException::configuration('Every selected interface must have a valid name.');
+                }
             }
         }
 
-        if ($interfaces === [] || count(array_unique($interfaces)) !== count($interfaces)) {
-            throw RouterProbeException::configuration('Select one or more distinct Ethernet interfaces.');
+        if ($interfaces === [] && $interfacesToRemove === []) {
+            throw RouterProbeException::configuration('Select at least one Ethernet interface to add or remove.');
+        }
+
+        if (
+            count(array_unique($interfaces)) !== count($interfaces)
+            || count(array_unique($interfacesToRemove)) !== count($interfacesToRemove)
+            || array_intersect($interfaces, $interfacesToRemove) !== []
+        ) {
+            throw RouterProbeException::configuration(
+                'Bridge additions and removals must be distinct Ethernet interfaces.'
+            );
         }
 
         $client = $this->connections->make($router);
@@ -457,20 +491,23 @@ class MikrotikRouterGateway implements RouterGateway
 
         $bridgePorts = $this->getRows($client, $router, '/rest/interface/bridge/port', $correlationId);
         $bridgeByInterface = [];
+        $bridgePortIdsByInterface = [];
 
         foreach ($bridgePorts as $bridgePort) {
             $interface = $this->stringOrNull($bridgePort['interface'] ?? null);
             $bridge = $this->stringOrNull($bridgePort['bridge'] ?? null);
+            $portId = $this->stringOrNull($bridgePort['.id'] ?? null);
 
             if ($interface !== null && $bridge !== null) {
                 $bridgeByInterface[$interface] = $bridge;
+                $bridgePortIdsByInterface[$interface] = $portId;
             }
         }
 
         foreach ($interfaces as $interface) {
             if (! in_array($interfaceTypes[$interface] ?? null, ['ether', 'ethernet'], true)) {
                 throw RouterProbeException::configuration(
-                    'A selected interface is no longer an available Ethernet interface.'
+                    'A selected interface to add is no longer an available Ethernet interface.'
                 );
             }
 
@@ -479,6 +516,26 @@ class MikrotikRouterGateway implements RouterGateway
             if ($currentBridge !== null && $currentBridge !== $bridgeName) {
                 throw RouterProbeException::configuration(
                     'A selected interface already belongs to a different bridge. Remove it from that bridge before continuing.'
+                );
+            }
+        }
+
+        foreach ($interfacesToRemove as $interface) {
+            if (! in_array($interfaceTypes[$interface] ?? null, ['ether', 'ethernet'], true)) {
+                throw RouterProbeException::configuration(
+                    'A selected interface to remove is no longer an available Ethernet interface.'
+                );
+            }
+
+            if (($bridgeByInterface[$interface] ?? null) !== $bridgeName) {
+                throw RouterProbeException::configuration(
+                    'A selected interface to remove no longer belongs to the requested bridge.'
+                );
+            }
+
+            if (! filled($bridgePortIdsByInterface[$interface] ?? null)) {
+                throw RouterProbeException::configuration(
+                    'RouterOS did not return the bridge port identifier needed for removal.'
                 );
             }
         }
@@ -505,6 +562,69 @@ class MikrotikRouterGateway implements RouterGateway
                 ['bridge' => $bridgeName, 'interface' => $interface],
                 $correlationId,
             );
+        }
+
+        foreach ($interfacesToRemove as $interface) {
+            $portId = (string) $bridgePortIdsByInterface[$interface];
+
+            if (preg_match('/\A\*[A-Za-z0-9]+\z/', $portId) !== 1) {
+                throw RouterProbeException::configuration(
+                    'RouterOS returned an invalid bridge port identifier for removal.'
+                );
+            }
+
+            $this->delete(
+                $client,
+                $router,
+                '/rest/interface/bridge/port/'.$portId,
+                $correlationId,
+            );
+        }
+
+        $verifiedInterfaces = $this->getRows($client, $router, '/rest/interface', $correlationId);
+        $verifiedBridgeExists = false;
+
+        foreach ($verifiedInterfaces as $verifiedInterface) {
+            if (
+                $this->stringOrNull($verifiedInterface['name'] ?? null) === $bridgeName
+                && strtolower((string) ($verifiedInterface['type'] ?? '')) === 'bridge'
+            ) {
+                $verifiedBridgeExists = true;
+                break;
+            }
+        }
+
+        if (! $verifiedBridgeExists) {
+            throw RouterProbeException::configuration(
+                "RouterOS did not confirm that bridge {$bridgeName} exists."
+            );
+        }
+
+        $verifiedBridgeByInterface = [];
+
+        foreach ($this->getRows($client, $router, '/rest/interface/bridge/port', $correlationId) as $bridgePort) {
+            $interface = $this->stringOrNull($bridgePort['interface'] ?? null);
+            $bridge = $this->stringOrNull($bridgePort['bridge'] ?? null);
+
+            if ($interface !== null && $bridge !== null) {
+                $verifiedBridgeByInterface[$interface] = $bridge;
+            }
+        }
+
+        foreach ($interfaces as $interface) {
+            if (($verifiedBridgeByInterface[$interface] ?? null) !== $bridgeName) {
+                throw RouterProbeException::configuration(
+                    "RouterOS did not confirm that {$interface} was added to {$bridgeName}."
+                );
+            }
+        }
+
+        foreach ($interfacesToRemove as $interface) {
+            if (($verifiedBridgeByInterface[$interface] ?? null) === $bridgeName) {
+                throw RouterProbeException::configuration(
+                    "RouterOS did not confirm that {$interface} was removed from {$bridgeName}."
+                );
+            }
         }
     }
 
@@ -848,6 +968,7 @@ class MikrotikRouterGateway implements RouterGateway
             }
 
             $hotspotUserProfiles[] = [
+                'id' => $this->stringOrNull($profile['.id'] ?? null),
                 'name' => $name,
                 'rate_limit' => $this->stringOrNull($profile['rate-limit'] ?? null),
                 'shared_users' => $this->stringOrNull($profile['shared-users'] ?? null) ?? '1',
@@ -860,6 +981,44 @@ class MikrotikRouterGateway implements RouterGateway
         );
 
         return $hotspotUserProfiles;
+    }
+
+    public function activeHotspotSessions(Router $router, string $correlationId): array
+    {
+        $rows = $this->getRows(
+            $this->connections->make($router),
+            $router,
+            '/rest/ip/hotspot/active',
+            $correlationId,
+        );
+        $sessions = [];
+
+        foreach ($rows as $row) {
+            $username = $this->stringOrNull($row['user'] ?? null)
+                ?? $this->stringOrNull($row['name'] ?? null);
+
+            if ($username === null) {
+                continue;
+            }
+
+            $rxBytes = $this->intOrNull($row['bytes-in'] ?? null)
+                ?? $this->intOrNull($row['rx-bytes'] ?? null);
+            $txBytes = $this->intOrNull($row['bytes-out'] ?? null)
+                ?? $this->intOrNull($row['tx-bytes'] ?? null);
+
+            $sessions[] = [
+                'id' => $this->stringOrNull($row['.id'] ?? null),
+                'username' => $username,
+                'ip_address' => $this->stringOrNull($row['address'] ?? null),
+                'mac_address' => $this->stringOrNull($row['mac-address'] ?? null),
+                'connected_seconds' => $this->parseUptime($this->stringOrNull($row['uptime'] ?? null)),
+                'rx_bytes' => $rxBytes,
+                'tx_bytes' => $txBytes,
+                'total_bytes' => max(0, (int) ($rxBytes ?? 0)) + max(0, (int) ($txBytes ?? 0)),
+            ];
+        }
+
+        return $sessions;
     }
 
     public function createHotspotUserProfile(
@@ -954,6 +1113,712 @@ class MikrotikRouterGateway implements RouterGateway
                 "RouterOS did not confirm the requested Hotspot user profile settings for {$profileName}."
             );
         }
+    }
+
+    public function updateHotspotUserProfile(
+        Router $router,
+        string $profileId,
+        string $profileName,
+        ?string $expectedRateLimit,
+        int $expectedSharedUsers,
+        ?string $rateLimit,
+        int $sharedUsers,
+        string $correlationId,
+    ): void {
+        if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $profileName) !== 1) {
+            throw RouterProbeException::configuration('The Hotspot profile name must use 1 to 64 letters, numbers, dots, underscores, or hyphens.');
+        }
+
+        if (preg_match('/\A\*[0-9A-Fa-f]+\z/', $profileId) !== 1) {
+            throw RouterProbeException::configuration('The Hotspot profile identifier is invalid.');
+        }
+
+        if ($sharedUsers < 1 || $expectedSharedUsers < 1) {
+            throw RouterProbeException::configuration('The Hotspot profile shared-user limit must be at least one.');
+        }
+
+        try {
+            $expectedSpeeds = $this->hotspotProfileSpeeds($expectedRateLimit);
+            $desiredSpeeds = $this->hotspotProfileSpeeds($rateLimit);
+            $desiredRateLimit = HotspotRateLimit::canonical($rateLimit);
+        } catch (RouterProbeException $exception) {
+            throw $exception;
+        } catch (InvalidArgumentException $exception) {
+            throw RouterProbeException::configuration(
+                'The Hotspot profile rate limit is invalid: '.$exception->getMessage()
+            );
+        }
+
+        $client = $this->connections->make($router);
+        $endpoint = '/rest/ip/hotspot/user/profile';
+        $profiles = $this->getRows($client, $router, $endpoint, $correlationId);
+        $current = $this->findHotspotUserProfileById($profiles, $profileId, $profileName);
+
+        if ($current === null) {
+            throw RouterProbeException::configuration(
+                "The Hotspot user profile {$profileName} no longer exists on this router. Refresh the profile list and try again."
+            );
+        }
+
+        $currentSpeeds = $this->hotspotProfileSpeeds($this->stringOrNull($current['rate-limit'] ?? null));
+        $currentSharedUsers = $this->stringOrNull($current['shared-users'] ?? null) ?? '1';
+
+        if (
+            $currentSpeeds !== $expectedSpeeds
+            || $currentSharedUsers !== (string) $expectedSharedUsers
+        ) {
+            throw RouterProbeException::configuration(
+                "The Hotspot user profile {$profileName} changed after it was loaded. Refresh the profile list and try again."
+            );
+        }
+
+        if ($desiredSpeeds === $currentSpeeds && (string) $sharedUsers === $currentSharedUsers) {
+            return;
+        }
+
+        $payload = [
+            'shared-users' => (string) $sharedUsers,
+            'rate-limit' => $desiredRateLimit ?? '',
+        ];
+
+        $this->patch(
+            $client,
+            $router,
+            $endpoint.'/'.$profileId,
+            $payload,
+            $profileName,
+            $correlationId,
+        );
+
+        $profiles = $this->getRows($client, $router, $endpoint, $correlationId);
+        $updated = $this->findHotspotUserProfileById($profiles, $profileId, $profileName);
+        $updatedSpeeds = $updated === null
+            ? null
+            : $this->hotspotProfileSpeeds($this->stringOrNull($updated['rate-limit'] ?? null));
+        $updatedSharedUsers = $updated === null
+            ? null
+            : ($this->stringOrNull($updated['shared-users'] ?? null) ?? '1');
+
+        if (
+            $updated === null
+            || $updatedSpeeds !== $desiredSpeeds
+            || $updatedSharedUsers !== (string) $sharedUsers
+        ) {
+            throw RouterProbeException::configuration(
+                "RouterOS did not confirm the requested Hotspot user profile settings for {$profileName}."
+            );
+        }
+    }
+
+    public function exportConfiguration(Router $router, string $fileName, string $correlationId): array
+    {
+        $this->assertConfigurationFileName($fileName);
+
+        $client = $this->connections->make($router);
+        $baseName = substr($fileName, 0, -4);
+        $checks = [];
+
+        $this->postRows(
+            $client,
+            $router,
+            '/rest/export',
+            ['file' => $baseName],
+            $correlationId,
+        );
+
+        $checks['export'] = $this->check(true, 'RouterOS accepted the configuration export request.');
+
+        $contents = '';
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $contents = $this->readRemoteFile($client, $router, $fileName, $correlationId);
+
+            if ($contents !== '') {
+                break;
+            }
+
+            usleep(200_000);
+        }
+
+        if ($contents === '') {
+            $checks['read_back'] = $this->check(false, 'The RouterOS export did not produce any content.');
+
+            throw RouterProbeException::configuration(
+                'The RouterOS configuration export did not produce any content.'
+            );
+        }
+
+        $checks['read_back'] = $this->check(
+            true,
+            sprintf('Read back %s bytes of RouterOS configuration.', number_format(strlen($contents))),
+        );
+
+        try {
+            $this->deleteConfigurationFile($router, $fileName, $correlationId);
+            $checks['temporary_file_removed'] = $this->check(
+                true,
+                'The temporary RouterOS export file was removed.',
+            );
+        } catch (Throwable $exception) {
+            $checks['temporary_file_removed'] = $this->check(
+                false,
+                'The temporary RouterOS export file could not be removed: '.$exception->getMessage(),
+            );
+
+            throw $exception;
+        }
+
+        return [
+            'contents' => $contents,
+            'checks' => $checks,
+            'file_name' => $fileName,
+        ];
+    }
+
+    public function uploadConfigurationFile(
+        Router $router,
+        string $fileName,
+        string $contents,
+        string $correlationId,
+    ): void {
+        $this->assertConfigurationFileName($fileName);
+
+        if ($contents === '') {
+            throw RouterProbeException::configuration('The uploaded .rsc file is empty.');
+        }
+
+        if (strlen($contents) > self::MAX_IMPORT_FILE_BYTES) {
+            throw RouterProbeException::configuration(
+                'RouterOS accepts .rsc uploads up to '.self::MAX_IMPORT_FILE_BYTES.' bytes. Upload a smaller file.'
+            );
+        }
+
+        $client = $this->connections->make($router);
+
+        if ($this->fileExists($client, $router, $fileName, $correlationId)) {
+            $this->deleteConfigurationFile($router, $fileName, $correlationId);
+        }
+
+        $this->put(
+            $client,
+            $router,
+            '/rest/file',
+            ['name' => $fileName, 'contents' => $contents],
+            $correlationId,
+        );
+
+        if ($this->readRemoteFile($client, $router, $fileName, $correlationId) !== $contents) {
+            throw RouterProbeException::configuration(
+                'RouterOS did not read back the uploaded .rsc file exactly as sent.'
+            );
+        }
+    }
+
+    public function importConfigurationFile(
+        Router $router,
+        string $fileName,
+        bool $dryRun,
+        string $correlationId,
+    ): array {
+        $this->assertConfigurationFileName($fileName);
+
+        $client = $this->connections->make($router);
+
+        if (! $this->fileExists($client, $router, $fileName, $correlationId)) {
+            throw RouterProbeException::configuration(
+                'The uploaded .rsc file is no longer present on this router.'
+            );
+        }
+
+        $payload = ['file-name' => $fileName, 'verbose' => 'yes'];
+
+        if ($dryRun) {
+            $payload['dry-run'] = '';
+        }
+
+        $rows = $this->postRows($client, $router, '/rest/import', $payload, $correlationId);
+        $messages = $this->importMessages($rows);
+        $joined = implode("\n", $messages);
+
+        if ($dryRun) {
+            if (stripos($joined, 'no syntax errors found') === false || $this->importHasErrors($messages)) {
+                throw RouterProbeException::configuration(
+                    'RouterOS did not confirm that the .rsc file is syntactically valid.'
+                    .($joined === '' ? '' : ' RouterOS said: '.$joined)
+                );
+            }
+
+            return [
+                'messages' => $messages,
+                'checks' => [
+                    'syntax' => $this->check(
+                        true,
+                        'RouterOS confirmed that the .rsc file has no syntax errors.',
+                    ),
+                ],
+            ];
+        }
+
+        if ($this->importHasErrors($messages)) {
+            throw RouterProbeException::configuration(
+                'RouterOS reported an error while importing the .rsc file: '.$joined
+            );
+        }
+
+        return [
+            'messages' => $messages,
+            'checks' => [
+                'import' => $this->check(
+                    true,
+                    'RouterOS completed the .rsc import without reporting an error.',
+                ),
+            ],
+        ];
+    }
+
+    public function deleteConfigurationFile(Router $router, string $fileName, string $correlationId): void
+    {
+        $this->assertConfigurationFileName($fileName);
+
+        $client = $this->connections->make($router);
+
+        if (! $this->fileExists($client, $router, $fileName, $correlationId)) {
+            return;
+        }
+
+        $this->delete($client, $router, '/rest/file/'.rawurlencode($fileName), $correlationId);
+
+        if ($this->fileExists($client, $router, $fileName, $correlationId)) {
+            throw RouterProbeException::configuration(
+                'The temporary RouterOS file still exists after deletion.'
+            );
+        }
+    }
+
+    public function resetManagedConfiguration(
+        Router $router,
+        string $expectedIdentity,
+        string $bridgeName,
+        array $managedInterfaces,
+        array $managedProfileNames,
+        string $correlationId,
+    ): array {
+        $identity = RouterIdentity::normalize($expectedIdentity, $router->name);
+
+        if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,31}\z/', $bridgeName) !== 1) {
+            throw RouterProbeException::configuration('The bridge name is invalid.');
+        }
+
+        foreach ($managedInterfaces as $interface) {
+            if (! is_string($interface) || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $interface) !== 1) {
+                throw RouterProbeException::configuration('A managed bridge interface name is invalid.');
+            }
+        }
+
+        foreach ($managedProfileNames as $profileName) {
+            if (! is_string($profileName)
+                || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $profileName) !== 1) {
+                throw RouterProbeException::configuration('A managed HotSpot profile name is invalid.');
+            }
+        }
+
+        $managedInterfaces = array_values(array_unique($managedInterfaces));
+        $managedProfileNames = array_values(array_unique([$identity, ...$managedProfileNames]));
+        $client = $this->connections->make($router);
+        $checks = [];
+        $managedAddressCount = $this->matchingRowCount(
+            $this->getRows($client, $router, '/rest/ip/address', $correlationId),
+            fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '')
+                === self::MANAGED_ADDRESS_COMMENT,
+        );
+
+        $this->setIdentity($router, $identity, $correlationId);
+        $checks['identity'] = $this->check(true, 'The router identity was restored to '.$identity.'.');
+
+        $this->deleteRowsMatching(
+            $client,
+            $router,
+            '/rest/ip/hotspot',
+            $this->getRows($client, $router, '/rest/ip/hotspot', $correlationId),
+            fn (array $row): bool => $this->stringOrNull($row['name'] ?? null) === $identity,
+            'HotSpot server',
+            $correlationId,
+        );
+
+        $this->deleteRowsMatching(
+            $client,
+            $router,
+            '/rest/ip/hotspot/user/profile',
+            $this->getRows($client, $router, '/rest/ip/hotspot/user/profile', $correlationId),
+            fn (array $row): bool => in_array(
+                $this->stringOrNull($row['name'] ?? null),
+                $managedProfileNames,
+                true,
+            ),
+            'HotSpot user profile',
+            $correlationId,
+        );
+
+        $networkResources = [
+            ['/rest/ip/dhcp-server', self::MANAGED_DHCP_SERVER_COMMENT, 'DHCP server'],
+            ['/rest/ip/dhcp-server/network', self::MANAGED_DHCP_NETWORK_COMMENT, 'DHCP network'],
+            ['/rest/ip/firewall/nat', self::MANAGED_NAT_COMMENT, 'NAT rule'],
+        ];
+
+        foreach ($networkResources as [$endpoint, $comment, $label]) {
+            $this->deleteRowsMatching(
+                $client,
+                $router,
+                $endpoint,
+                $this->getRows($client, $router, $endpoint, $correlationId),
+                fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '') === $comment,
+                $label,
+                $correlationId,
+            );
+        }
+
+        $this->deleteRowsMatching(
+            $client,
+            $router,
+            '/rest/ip/firewall/filter',
+            $this->getRows($client, $router, '/rest/ip/firewall/filter', $correlationId),
+            fn (array $row): bool => $this->isManagedFirewallRow($row),
+            'firewall rule',
+            $correlationId,
+        );
+
+        $this->deleteRowsMatching(
+            $client,
+            $router,
+            '/rest/interface/bridge/port',
+            $this->getRows($client, $router, '/rest/interface/bridge/port', $correlationId),
+            fn (array $row): bool => $this->stringOrNull($row['bridge'] ?? null) === $bridgeName
+                && in_array($this->stringOrNull($row['interface'] ?? null), $managedInterfaces, true),
+            'bridge port',
+            $correlationId,
+        );
+
+        $this->deleteRowsMatching(
+            $client,
+            $router,
+            '/rest/ip/pool',
+            $this->getRows($client, $router, '/rest/ip/pool', $correlationId),
+            fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '') === self::MANAGED_POOL_COMMENT,
+            'IP pool',
+            $correlationId,
+        );
+
+        $checks['managed_entries_removed'] = $this->check(
+            true,
+            'MMUTech-managed objects were removed; management firewall rules and voucher users were preserved.',
+        );
+
+        $checks['identity_verified'] = $this->check(
+            $this->readIdentity($client, $router, $correlationId) === $identity,
+            'RouterOS read back the expected identity.',
+        );
+
+        $checks['hotspot_removed'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/ip/hotspot', $correlationId),
+                fn (array $row): bool => $this->stringOrNull($row['name'] ?? null) === $identity,
+            ) === 0,
+            'The MMUTech-managed HotSpot server is no longer present.',
+        );
+
+        $checks['hotspot_profiles_removed'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/ip/hotspot/user/profile', $correlationId),
+                fn (array $row): bool => in_array(
+                    $this->stringOrNull($row['name'] ?? null),
+                    $managedProfileNames,
+                    true,
+                ),
+            ) === 0,
+            'The MMUTech-managed HotSpot user profiles are no longer present.',
+        );
+
+        $networkChecks = [];
+
+        foreach ($networkResources as [$endpoint, $comment, $label]) {
+            $networkChecks[$endpoint] = $this->matchingRowCount(
+                $this->getRows($client, $router, $endpoint, $correlationId),
+                fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '') === $comment,
+            );
+        }
+
+        $checks['network_removed'] = $this->check(
+            array_sum($networkChecks) === 0,
+            'MMUTech-managed DHCP and NAT entries are no longer present.',
+        );
+
+        $checks['lan_address_preserved'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/ip/address', $correlationId),
+                fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '')
+                    === self::MANAGED_ADDRESS_COMMENT,
+            ) === $managedAddressCount,
+            'The MMUTech-managed LAN address was preserved so management access remains available.',
+        );
+
+        $checks['firewall_removed'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/ip/firewall/filter', $correlationId),
+                fn (array $row): bool => $this->isManagedFirewallRow($row),
+            ) === 0,
+            'MMUTech-managed firewall rules are no longer present. Management access rules remain.',
+        );
+
+        $checks['bridge_members_removed'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/interface/bridge/port', $correlationId),
+                fn (array $row): bool => $this->stringOrNull($row['bridge'] ?? null) === $bridgeName
+                    && in_array($this->stringOrNull($row['interface'] ?? null), $managedInterfaces, true),
+            ) === 0,
+            'MMUTech-managed LAN bridge members are no longer present.',
+        );
+
+        $checks['pool_removed'] = $this->check(
+            $this->matchingRowCount(
+                $this->getRows($client, $router, '/rest/ip/pool', $correlationId),
+                fn (array $row): bool => ($this->stringOrNull($row['comment'] ?? null) ?? '') === self::MANAGED_POOL_COMMENT,
+            ) === 0,
+            'The MMUTech-managed LAN pool is no longer present.',
+        );
+
+        $checks['vouchers_preserved'] = $this->check(
+            true,
+            'RouterOS HotSpot users were not modified.',
+        );
+
+        return $checks;
+    }
+
+    private function assertConfigurationFileName(string $fileName): void
+    {
+        if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.rsc\z/', $fileName) !== 1) {
+            throw RouterProbeException::configuration('The configuration file name is invalid.');
+        }
+    }
+
+    /**
+     * @param  array<string, string>  $payload
+     * @return array<int, array<string, mixed>>
+     */
+    private function postRows(
+        Client $client,
+        Router $router,
+        string $endpoint,
+        array $payload,
+        string $correlationId,
+    ): array {
+        $started = hrtime(true);
+
+        try {
+            $rows = $client->post($endpoint, $payload);
+
+            $this->recorder->success(
+                $router,
+                'POST',
+                $endpoint,
+                $this->elapsedMs($started),
+                200,
+                ['fields' => array_keys($payload)],
+                ['count' => is_array($rows) ? count($rows) : 0],
+                $correlationId,
+            );
+
+            if (! is_array($rows)) {
+                return [];
+            }
+
+            return array_is_list($rows) ? $rows : [$rows];
+        } catch (Throwable $exception) {
+            $this->recordFailure(
+                $router,
+                'POST',
+                $endpoint,
+                $started,
+                $exception,
+                $correlationId,
+                $client,
+                ['fields' => array_keys($payload)],
+            );
+
+            throw $this->asProbeException($exception, $client);
+        }
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function readRemoteFile(
+        Client $client,
+        Router $router,
+        string $fileName,
+        string $correlationId,
+    ): string {
+        $contents = '';
+        $offset = 0;
+
+        while (true) {
+            $rows = $this->postRows(
+                $client,
+                $router,
+                '/rest/file/read',
+                [
+                    'file' => $fileName,
+                    'chunk-size' => (string) self::FILE_READ_CHUNK_BYTES,
+                    'offset' => (string) $offset,
+                ],
+                $correlationId,
+            );
+
+            $chunk = $this->stringOrNull($rows[0]['data'] ?? null) ?? '';
+
+            if ($chunk === '') {
+                break;
+            }
+
+            $contents .= $chunk;
+            $offset += strlen($chunk);
+
+            if ($offset > self::MAX_EXPORT_FILE_BYTES) {
+                throw RouterProbeException::configuration(
+                    'The RouterOS configuration file exceeds the supported download size.'
+                );
+            }
+
+            if (strlen($chunk) < self::FILE_READ_CHUNK_BYTES) {
+                break;
+            }
+        }
+
+        return $contents;
+    }
+
+    private function fileExists(
+        Client $client,
+        Router $router,
+        string $fileName,
+        string $correlationId,
+    ): bool {
+        $rows = $this->getRows(
+            $client,
+            $router,
+            '/rest/file?name='.rawurlencode($fileName),
+            $correlationId,
+        );
+
+        foreach ($rows as $row) {
+            if ($this->stringOrNull($row['name'] ?? null) === $fileName) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<string, mixed> $row */
+    private function isManagedFirewallRow(array $row): bool
+    {
+        $comment = $this->stringOrNull($row['comment'] ?? null) ?? '';
+
+        if (! str_starts_with($comment, self::MANAGED_FIREWALL_COMMENT_PREFIX)) {
+            return false;
+        }
+
+        return ! str_starts_with($comment, self::MANAGED_FIREWALL_COMMENT_PREFIX.'input management ');
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @param  callable(array<string, mixed>): bool  $predicate
+     */
+    private function deleteRowsMatching(
+        Client $client,
+        Router $router,
+        string $endpoint,
+        array $rows,
+        callable $predicate,
+        string $label,
+        string $correlationId,
+    ): int {
+        $deleted = 0;
+
+        foreach ($rows as $row) {
+            if (! $predicate($row)) {
+                continue;
+            }
+
+            $id = $this->stringOrNull($row['.id'] ?? null);
+
+            if ($id === null) {
+                throw RouterProbeException::configuration(
+                    'A managed '.$label.' could not be removed because RouterOS returned no identifier.'
+                );
+            }
+
+            $this->delete(
+                $client,
+                $router,
+                $endpoint.'/'.rawurlencode($id),
+                $correlationId,
+            );
+            $deleted++;
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @param  callable(array<string, mixed>): bool  $predicate
+     */
+    private function matchingRowCount(array $rows, callable $predicate): int
+    {
+        $count = 0;
+
+        foreach ($rows as $row) {
+            if ($predicate($row)) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<int, string>
+     */
+    private function importMessages(array $rows): array
+    {
+        $messages = [];
+
+        foreach ($rows as $row) {
+            foreach (['ret', 'message', 'output', 'data'] as $key) {
+                $message = $this->stringOrNull($row[$key] ?? null);
+
+                if ($message !== null && $message !== '') {
+                    $messages[] = $message;
+                }
+            }
+        }
+
+        return array_values(array_unique($messages));
+    }
+
+    /**
+     * @param  array<int, string>  $messages
+     */
+    private function importHasErrors(array $messages): bool
+    {
+        foreach ($messages as $message) {
+            if (preg_match('/\berror\b|\bfailed\b|\bfailure\b|\binvalid\b/i', $message) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function readIdentity(Client $client, Router $router, string $correlationId): string
@@ -1198,6 +2063,42 @@ class MikrotikRouterGateway implements RouterGateway
         }
     }
 
+    private function delete(
+        Client $client,
+        Router $router,
+        string $endpoint,
+        string $correlationId,
+    ): void {
+        $started = hrtime(true);
+
+        try {
+            $client->delete($endpoint);
+
+            $this->recorder->success(
+                $router,
+                'DELETE',
+                $endpoint,
+                $this->elapsedMs($started),
+                200,
+                [],
+                [],
+                $correlationId
+            );
+        } catch (Throwable $exception) {
+            $this->recordFailure(
+                $router,
+                'DELETE',
+                $endpoint,
+                $started,
+                $exception,
+                $correlationId,
+                $client,
+            );
+
+            throw $this->asProbeException($exception, $client);
+        }
+    }
+
     /**
      * @param  array<string, string>  $payload
      */
@@ -1303,6 +2204,38 @@ class MikrotikRouterGateway implements RouterGateway
         return null;
     }
 
+    /**
+     * @param  array<int, array<string, mixed>>  $profiles
+     * @return array<string, mixed>|null
+     */
+    private function findHotspotUserProfileById(array $profiles, string $profileId, string $profileName): ?array
+    {
+        foreach ($profiles as $profile) {
+            if (
+                (($profile['.id'] ?? null) === $profileId)
+                && (($profile['name'] ?? null) === $profileName)
+            ) {
+                return $profile;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{upload: int, download: int}|null
+     */
+    private function hotspotProfileSpeeds(?string $rateLimit): ?array
+    {
+        try {
+            return HotspotRateLimit::speedsKbps($rateLimit);
+        } catch (InvalidArgumentException $exception) {
+            throw RouterProbeException::configuration(
+                'The Hotspot profile rate limit is invalid: '.$exception->getMessage()
+            );
+        }
+    }
+
     private function routerOsBoolean(mixed $value): bool
     {
         return filter_var($value, FILTER_VALIDATE_BOOLEAN);
@@ -1345,21 +2278,25 @@ class MikrotikRouterGateway implements RouterGateway
 
         $seconds = 0;
         $matched = preg_match_all('/(\d+)(w|d|h|m|s)/', $uptime, $matches, PREG_SET_ORDER);
+        $hasDuration = $matched !== false && $matched > 0;
 
-        if ($matched === false || $matched === 0) {
-            return null;
+        if ($hasDuration) {
+            foreach ($matches as $match) {
+                $seconds += (int) $match[1] * match ($match[2]) {
+                    'w' => 604800,
+                    'd' => 86400,
+                    'h' => 3600,
+                    'm' => 60,
+                    's' => 1,
+                };
+            }
         }
 
-        foreach ($matches as $match) {
-            $seconds += (int) $match[1] * match ($match[2]) {
-                'w' => 604800,
-                'd' => 86400,
-                'h' => 3600,
-                'm' => 60,
-                's' => 1,
-            };
+        if (preg_match('/(\d+):(\d{1,2}):(\d{1,2})\z/', $uptime, $clock) === 1) {
+            $seconds += (int) $clock[1] * 3600 + (int) $clock[2] * 60 + (int) $clock[3];
+            $hasDuration = true;
         }
 
-        return $seconds;
+        return $hasDuration ? $seconds : null;
     }
 }

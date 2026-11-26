@@ -1,9 +1,12 @@
 <?php
 
 use App\Enums\ProvisioningStatus;
+use App\Enums\VoucherLifecycleStatus;
 use App\Jobs\ProvisionVoucherJob;
+use App\Jobs\RevokeVoucherJob;
 use App\Models\Router;
 use App\Models\Voucher;
+use App\Services\Vouchers\LiveVoucherUsageService;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -30,6 +33,10 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
     public string $provisioningModalState = 'closed';
 
     public string $provisioningAlertMessage = '';
+
+    public string $revocationModalState = 'closed';
+
+    public string $revocationAlertMessage = '';
 
     public function updatedSearch(): void
     {
@@ -64,6 +71,7 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
         abort_unless(auth()->user()->can('vouchers.provision'), 403);
 
         $this->resetErrorBag('selectedVouchers');
+        $this->revocationModalState = 'closed';
         $this->provisioningModalState = 'confirm';
     }
 
@@ -71,6 +79,23 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
     {
         $this->provisioningModalState = 'closed';
         $this->provisioningAlertMessage = '';
+        $this->resetErrorBag('selectedVouchers');
+    }
+
+    public function openRevocationConfirmation(): void
+    {
+        $this->authorize('viewAny', Voucher::class);
+        abort_unless(auth()->user()->can('vouchers.revoke'), 403);
+
+        $this->resetErrorBag('selectedVouchers');
+        $this->provisioningModalState = 'closed';
+        $this->revocationModalState = 'confirm';
+    }
+
+    public function closeRevocationModal(): void
+    {
+        $this->revocationModalState = 'closed';
+        $this->revocationAlertMessage = '';
         $this->resetErrorBag('selectedVouchers');
     }
 
@@ -163,6 +188,96 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
         $this->provisioningAlertMessage =
             $queued === count($selectedIds)
                 ? "Queued {$queued} voucher(s) for provisioning."
+                : "Queued {$queued} of ".count($selectedIds).' selected voucher(s); the others were no longer eligible.';
+    }
+
+    public function revokeSelected(): void
+    {
+        $this->authorize('viewAny', Voucher::class);
+        abort_unless(auth()->user()->can('vouchers.revoke'), 403);
+
+        $validated = $this->validate([
+            'selectedVouchers' => ['required', 'array', 'min:1', 'max:'.self::MAX_BULK_VOUCHERS],
+            'selectedVouchers.*' => ['required', 'integer', 'distinct'],
+        ]);
+        $selectedIds = array_values(array_unique(array_map('intval', $validated['selectedVouchers'])));
+
+        if (count($selectedIds) !== count($validated['selectedVouchers'])) {
+            $this->addError('selectedVouchers', 'Select each voucher only once.');
+
+            return;
+        }
+
+        $user = auth()->user();
+        $query = Voucher::query()->whereKey($selectedIds);
+
+        if (! $user->isSuperAdmin()) {
+            $query->whereIn('router_id', $user->routers()->pluck('routers.id'));
+        }
+
+        $vouchers = $query->get();
+
+        if ($vouchers->count() !== count($selectedIds)) {
+            $this->addError('selectedVouchers', 'One or more selected vouchers are unavailable.');
+
+            return;
+        }
+
+        foreach ($vouchers as $voucher) {
+            $this->authorize('view', $voucher);
+            $this->authorize('revoke', $voucher);
+
+            if (
+                $voucher->lifecycle_status === VoucherLifecycleStatus::Revoked
+                || in_array($voucher->provisioning_status, [
+                    ProvisioningStatus::Disabled,
+                    ProvisioningStatus::Removed,
+                    ProvisioningStatus::Disabling,
+                ], true)
+            ) {
+                $this->addError('selectedVouchers', 'Only active vouchers that are still on the router can be revoked.');
+
+                return;
+            }
+        }
+
+        $queued = 0;
+
+        foreach ($vouchers as $voucher) {
+            $updated = Voucher::query()
+                ->whereKey($voucher->getKey())
+                ->where('lifecycle_status', '!=', VoucherLifecycleStatus::Revoked->value)
+                ->whereNotIn('provisioning_status', [
+                    ProvisioningStatus::Disabled->value,
+                    ProvisioningStatus::Removed->value,
+                    ProvisioningStatus::Disabling->value,
+                ])
+                ->update([
+                    'provisioning_status' => ProvisioningStatus::Disabling,
+                    'provisioning_error' => null,
+                ]);
+
+            if ($updated !== 1) {
+                continue;
+            }
+
+            RevokeVoucherJob::dispatch($voucher->getKey(), $user->getKey());
+            $queued++;
+        }
+
+        $this->selectedVouchers = [];
+
+        if ($queued === 0) {
+            $this->revocationModalState = 'alert';
+            $this->revocationAlertMessage = 'None of the selected vouchers were still eligible for revocation.';
+
+            return;
+        }
+
+        $this->revocationModalState = 'alert';
+        $this->revocationAlertMessage =
+            $queued === count($selectedIds)
+                ? "Queued {$queued} voucher(s) for revocation."
                 : "Queued {$queued} of ".count($selectedIds).' selected voucher(s); the others were no longer eligible.';
     }
 
@@ -267,6 +382,16 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                 [ProvisioningStatus::Pending, ProvisioningStatus::Failed],
                 true,
             ) && $voucher->canBeProvisioned());
+        $canRevoke = $user->can('vouchers.revoke');
+        $canRevokeSelected = $canRevoke
+            && $selectedIds !== []
+            && $selectionIsAvailable
+            && $selectedVoucherRecords->every(fn (Voucher $voucher): bool => $voucher->lifecycle_status !== VoucherLifecycleStatus::Revoked
+                && ! in_array($voucher->provisioning_status, [
+                    ProvisioningStatus::Disabled,
+                    ProvisioningStatus::Removed,
+                    ProvisioningStatus::Disabling,
+                ], true));
 
         if ($canPrint && $this->printingVoucherIds !== []) {
             $printQuery = Voucher::query()
@@ -285,14 +410,19 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
             }
         }
 
+        $vouchers = $query->latest()->paginate(20);
+
         return $this->view([
-            'vouchers' => $query->latest()->paginate(20),
+            'vouchers' => $vouchers,
+            'liveUsage' => app(LiveVoucherUsageService::class)->forVouchers($vouchers->getCollection()),
             'routers' => Router::query()->orderBy('name')->get(),
             'canGenerate' => auth()->user()->can('generate', Voucher::class),
             'canProvision' => auth()->user()->can('vouchers.provision'),
+            'canRevoke' => $canRevoke,
             'canPrint' => $canPrint,
             'canPrintSelected' => $canPrintSelected,
             'canProvisionSelected' => $canProvisionSelected,
+            'canRevokeSelected' => $canRevokeSelected,
             'printingVouchers' => $printingVouchers,
         ])->title('Vouchers');
     }
@@ -329,16 +459,10 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                 <option value="revoked">Revoked</option>
             </select>
         </div>
-        @if ($canProvision || $canPrint)
+        @if ($canProvision || $canRevoke || $canPrint)
             <div class="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <p class="text-xs text-slate-500">
-                    @if ($canPrint && $canProvision)
-                        Select up to 100 vouchers to print or provision; provisioning is limited to eligible active or pending vouchers.
-                    @elseif ($canPrint)
-                        Select up to 100 vouchers to print.
-                    @else
-                        Select up to 100 eligible pending or failed vouchers to provision.
-                    @endif
+                    Select up to 100 vouchers for bulk actions. Provisioning and revocation are limited to eligible vouchers.
                 </p>
                 <div class="flex flex-wrap gap-2">
                     @if ($canPrint)
@@ -363,6 +487,17 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                             Provision selected ({{ count($selectedVouchers) }})
                         </button>
                     @endif
+                    @if ($canRevoke)
+                        <button
+                            type="button"
+                            wire:click="openRevocationConfirmation"
+                            wire:loading.attr="disabled"
+                            class="mm-btn-danger"
+                            @disabled(! $canRevokeSelected)
+                        >
+                            Revoke selected ({{ count($selectedVouchers) }})
+                        </button>
+                    @endif
                     @if ($selectedVouchers !== [])
                         <button type="button" wire:click="clearSelection" class="mm-btn-secondary">Clear selection</button>
                     @endif
@@ -374,12 +509,14 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
             <table class="min-w-full divide-y divide-slate-200">
                 <thead class="bg-slate-50">
                     <tr>
-                        @if ($canProvision || $canPrint)
+                        @if ($canProvision || $canRevoke || $canPrint)
                             <th class="mm-th"><span class="sr-only">Select</span></th>
                         @endif
                         <th class="mm-th">Username</th>
                         <th class="mm-th">Plan</th>
                         <th class="mm-th">Router</th>
+                        <th class="mm-th">Time connected</th>
+                        <th class="mm-th">Consumption</th>
                         <th class="mm-th">Lifecycle</th>
                         <th class="mm-th">Provisioning</th>
                         <th class="mm-th">Created</th>
@@ -389,12 +526,19 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                 <tbody class="divide-y divide-slate-100 bg-white">
                     @foreach ($vouchers as $voucher)
                         <tr>
-                            @if ($canProvision || $canPrint)
+                            @if ($canProvision || $canRevoke || $canPrint)
                                 <td class="mm-td">
                                     @if (($canPrint && $voucher->provisioning_status === ProvisioningStatus::Provisioned && $voucher->canBePrinted())
                                         || ($canProvision
                                             && in_array($voucher->provisioning_status, [ProvisioningStatus::Pending, ProvisioningStatus::Failed], true)
-                                            && $voucher->canBeProvisioned()))
+                                            && $voucher->canBeProvisioned())
+                                        || ($canRevoke
+                                            && $voucher->lifecycle_status !== VoucherLifecycleStatus::Revoked
+                                            && ! in_array($voucher->provisioning_status, [
+                                                ProvisioningStatus::Disabled,
+                                                ProvisioningStatus::Removed,
+                                                ProvisioningStatus::Disabling,
+                                            ], true)))
                                         <input
                                             type="checkbox"
                                             wire:model.live="selectedVouchers"
@@ -408,6 +552,9 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                             <td class="mm-td font-mono text-sm">{{ $voucher->username }}</td>
                             <td class="mm-td">{{ $voucher->plan->name ?? '—' }}</td>
                             <td class="mm-td">{{ $voucher->router->name ?? '—' }}</td>
+                            @php($usage = $liveUsage->get($voucher->getKey(), ['duration' => '—', 'consumption' => '—']))
+                            <td class="mm-td text-xs">{{ $usage['duration'] }}</td>
+                            <td class="mm-td text-xs">{{ $usage['consumption'] }}</td>
                             <td class="mm-td">
                                 <span class="text-xs">{{ $voucher->lifecycle_status->value }}</span>
                             </td>
@@ -450,6 +597,34 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
                         <button type="button" wire:click="provisionSelected" wire:loading.attr="disabled" class="mm-btn-primary">Provision selected</button>
                     @else
                         <button type="button" wire:click="closeProvisioningModal" class="mm-btn-primary">Close</button>
+                    @endif
+                </div>
+            </div>
+        </div>
+    @endif
+
+    @if ($revocationModalState !== 'closed')
+        <div class="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby="bulk-voucher-revocation-title">
+            <button type="button" class="absolute inset-0 h-full w-full cursor-default" wire:click="closeRevocationModal" aria-label="Close dialog"></button>
+            <div class="relative z-10 w-full rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-3xl sm:p-6">
+                <div class="flex items-start justify-between gap-4">
+                    <h2 id="bulk-voucher-revocation-title" class="text-lg font-semibold text-slate-900">
+                        {{ $revocationModalState === 'confirm' ? 'Revoke selected vouchers?' : 'Revocation alert' }}
+                    </h2>
+                    <button type="button" wire:click="closeRevocationModal" class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close dialog">×</button>
+                </div>
+                <p class="mt-3 text-sm leading-6 text-slate-600">
+                    {{ $revocationModalState === 'confirm'
+                        ? 'Disable '.count($selectedVouchers).' selected voucher(s) on their routers and disconnect any active sessions?'
+                        : $revocationAlertMessage }}
+                </p>
+                @error('selectedVouchers') <p class="mm-error mt-3">{{ $message }}</p> @enderror
+                <div class="mt-6 flex justify-end gap-2">
+                    @if ($revocationModalState === 'confirm')
+                        <button type="button" wire:click="closeRevocationModal" class="mm-btn-secondary">Cancel</button>
+                        <button type="button" wire:click="revokeSelected" wire:loading.attr="disabled" class="mm-btn-danger">Revoke selected</button>
+                    @else
+                        <button type="button" wire:click="closeRevocationModal" class="mm-btn-primary">Close</button>
                     @endif
                 </div>
             </div>

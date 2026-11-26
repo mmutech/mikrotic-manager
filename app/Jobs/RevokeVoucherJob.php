@@ -45,6 +45,7 @@ class RevokeVoucherJob implements ShouldQueue
 
         if ($voucher && in_array($voucher->provisioning_status, [
             ProvisioningStatus::Disabling,
+            ProvisioningStatus::Disabled,
             ProvisioningStatus::Removing,
         ], true)) {
             $voucher->update([

@@ -5,6 +5,7 @@ use App\Enums\VoucherLifecycleStatus;
 use App\Jobs\ProvisionVoucherJob;
 use App\Jobs\RevokeVoucherJob;
 use App\Models\Voucher;
+use App\Services\Vouchers\LiveVoucherUsageService;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -105,8 +106,11 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
         $this->voucher->refresh();
 
         if ($this->voucher->lifecycle_status === VoucherLifecycleStatus::Revoked
-            || $this->voucher->provisioning_status === ProvisioningStatus::Removed
-            || $this->voucher->provisioning_status === ProvisioningStatus::Disabling
+            || in_array($this->voucher->provisioning_status, [
+                ProvisioningStatus::Disabled,
+                ProvisioningStatus::Removed,
+                ProvisioningStatus::Disabling,
+            ], true)
         ) {
             $this->provisioningDialog = 'alert';
             $this->provisioningDialogMessage = 'This voucher is not eligible for revocation.';
@@ -118,6 +122,7 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
             ->whereKey($this->voucher->getKey())
             ->where('lifecycle_status', '!=', VoucherLifecycleStatus::Revoked->value)
             ->whereNotIn('provisioning_status', [
+                ProvisioningStatus::Disabled->value,
                 ProvisioningStatus::Removed->value,
                 ProvisioningStatus::Disabling->value,
             ])
@@ -145,9 +150,11 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
         $this->voucher = $this->voucher->fresh()->load(['plan', 'router', 'customer', 'generator']);
 
         return $this->view([
+            'liveUsage' => app(LiveVoucherUsageService::class)->forVoucher($this->voucher),
             'canRevoke' => $user->can('revoke', $this->voucher)
                 && $this->voucher->lifecycle_status !== VoucherLifecycleStatus::Revoked
                 && ! in_array($this->voucher->provisioning_status, [
+                    ProvisioningStatus::Disabled,
                     ProvisioningStatus::Removed,
                     ProvisioningStatus::Disabling,
                 ], true),
@@ -220,8 +227,12 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
                     <dd class="text-sm text-slate-900">{{ $voucher->plan?->quotaLabel() ?? $voucher->quotaLabel() }}</dd>
                 </div>
                 <div class="flex justify-between">
-                    <dt class="text-sm text-slate-500">Used Bytes</dt>
-                    <dd class="text-sm text-slate-900">{{ number_format($voucher->used_bytes) }}</dd>
+                    <dt class="text-sm text-slate-500">Time connected</dt>
+                    <dd class="text-sm text-slate-900">{{ $liveUsage['duration'] }}</dd>
+                </div>
+                <div class="flex justify-between">
+                    <dt class="text-sm text-slate-500">Consumption</dt>
+                    <dd class="text-sm text-slate-900">{{ $liveUsage['consumption'] }}</dd>
                 </div>
                 <div class="flex justify-between">
                     <dt class="text-sm text-slate-500">Remaining</dt>
@@ -306,7 +317,7 @@ new #[Layout('layouts::app')] #[Title('Voucher details')] class extends Componen
                     @if ($provisioningDialog === 'confirm')
                         Send this voucher to {{ $voucher->router->name }} now?
                     @elseif ($provisioningDialog === 'confirm_revoke')
-                        Remove this voucher from {{ $voucher->router->name }}?
+                        Disable this voucher on {{ $voucher->router->name }} and disconnect any active session?
                     @elseif ($provisioningDialog === 'processing')
                         Provisioning is queued. This dialog will update when the router finishes.
                     @elseif ($provisioningDialog === 'success')

@@ -184,6 +184,7 @@ class MikrotikRouterConfigurator
                 'out-interface' => $configuration['wan_interface'],
                 'disabled' => 'no',
                 'comment' => self::NAT_COMMENT,
+                'place-before' => '0',
             ]),
         ];
 
@@ -346,22 +347,33 @@ class MikrotikRouterConfigurator
             $correlationId,
         );
 
+        $natIdentity = [
+            'chain' => 'srcnat',
+            'action' => 'masquerade',
+            'src-address' => $configuration['network_cidr'],
+            'out-interface' => $configuration['wan_interface'],
+        ];
+
         $this->ensureResource(
             $client,
             $router,
             '/rest/ip/firewall/nat',
-            [
-                'chain' => 'srcnat',
-                'action' => 'masquerade',
-                'src-address' => $configuration['network_cidr'],
-                'out-interface' => $configuration['wan_interface'],
-            ],
+            $natIdentity,
             self::NAT_COMMENT,
             ['disabled' => 'no'],
             $correlationId,
         );
+        $this->ensureManagedRuleFirst(
+            $client,
+            $router,
+            '/rest/ip/firewall/nat',
+            self::NAT_COMMENT,
+            $natIdentity,
+            $correlationId,
+        );
 
         $this->ensureFirewallRules($client, $router, $configuration, $correlationId);
+        $this->reorderManagedFirewallRules($client, $router, $configuration, $correlationId);
 
         return $this->verifyWithClient($client, $router, $configuration, $correlationId);
     }
@@ -566,6 +578,137 @@ class MikrotikRouterConfigurator
         foreach (array_reverse($remainingRules) as $rule) {
             $anchor = $this->ensureFirewallRule($client, $router, $existingRules, $rule, $anchor, $correlationId);
         }
+    }
+
+    /**
+     * @param  array<string, string>  $identity
+     */
+    private function ensureManagedRuleFirst(
+        Client $client,
+        Router $router,
+        string $endpoint,
+        string $comment,
+        array $identity,
+        string $correlationId,
+    ): void {
+        $rows = $this->getRows($client, $router, $endpoint, $correlationId);
+        $managedRows = array_values(array_filter(
+            $rows,
+            fn (array $row): bool => ($row['comment'] ?? null) === $comment
+        ));
+
+        if ($managedRows === []) {
+            $managedRows = array_values(array_filter(
+                $rows,
+                fn (array $row): bool => $this->matches($row, $identity)
+            ));
+        }
+
+        if (count($managedRows) !== 1) {
+            return;
+        }
+
+        $managedId = $this->stringOrNull($managedRows[0]['.id'] ?? null);
+        $firstId = $this->firstRowId($rows);
+
+        if ($managedId === null || $firstId === null || $managedId === $firstId) {
+            return;
+        }
+
+        $this->moveResource($client, $router, $endpoint.'/move', $managedId, $firstId, $correlationId);
+    }
+
+    /**
+     * @param  array<string, mixed>  $configuration
+     */
+    private function reorderManagedFirewallRules(
+        Client $client,
+        Router $router,
+        array $configuration,
+        string $correlationId,
+    ): void {
+        $rules = $this->firewallRules($router, $configuration);
+        $rows = $this->getRows($client, $router, '/rest/ip/firewall/filter', $correlationId);
+        $managedIds = [];
+
+        foreach ($rules as $rule) {
+            $id = $this->findManagedRuleId($rows, $rule['comment'], $rule['settings']);
+
+            if ($id === null) {
+                return;
+            }
+
+            $managedIds[] = $id;
+        }
+
+        foreach ($managedIds as $index => $id) {
+            if (($rows[$index]['.id'] ?? null) === $id) {
+                continue;
+            }
+
+            $destinationId = $this->stringOrNull($rows[$index]['.id'] ?? null);
+
+            if ($destinationId === null) {
+                return;
+            }
+
+            $from = null;
+
+            foreach ($rows as $position => $row) {
+                if (($row['.id'] ?? null) === $id) {
+                    $from = $position;
+
+                    break;
+                }
+            }
+
+            if ($from === null) {
+                return;
+            }
+
+            $movingRow = $rows[$from];
+            array_splice($rows, $from, 1);
+
+            $destinationIndex = null;
+
+            foreach ($rows as $position => $row) {
+                if (($row['.id'] ?? null) === $destinationId) {
+                    $destinationIndex = $position;
+
+                    break;
+                }
+            }
+
+            if ($destinationIndex === null) {
+                return;
+            }
+
+            array_splice($rows, $destinationIndex, 0, [$movingRow]);
+
+            $this->moveResource(
+                $client,
+                $router,
+                '/rest/ip/firewall/filter/move',
+                $id,
+                $destinationId,
+                $correlationId,
+            );
+        }
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @param  array<string, string>  $settings
+     */
+    private function findManagedRuleId(array $rows, string $comment, array $settings): ?string
+    {
+        foreach ($rows as $row) {
+            if (($row['comment'] ?? null) === $comment && $this->matches($row, $settings)) {
+                return $this->stringOrNull($row['.id'] ?? null);
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1162,9 +1305,23 @@ class MikrotikRouterConfigurator
                 continue;
             }
 
-            if (trim((string) $actual[$key]) !== trim((string) $value)) {
-                return false;
+            $actualValue = trim((string) $actual[$key]);
+            $expectedValue = trim((string) $value);
+
+            if ($actualValue === $expectedValue) {
+                continue;
             }
+
+            $normalizedActual = Ipv4Cidr::normalize($actualValue);
+
+            if (
+                $normalizedActual !== null
+                && $normalizedActual === Ipv4Cidr::normalize($expectedValue)
+            ) {
+                continue;
+            }
+
+            return false;
         }
 
         return true;
@@ -1194,10 +1351,14 @@ class MikrotikRouterConfigurator
         $comment = $rule['comment'] ?? null;
         $settings = $rule['settings'] ?? $rule;
 
-        foreach ($rows as $index => $row) {
-            if ($comment !== null && ($row['comment'] ?? null) === $comment && $this->matches($row, $settings)) {
-                return $index;
+        if ($comment !== null) {
+            foreach ($rows as $index => $row) {
+                if (($row['comment'] ?? null) === $comment && $this->matches($row, $settings)) {
+                    return $index;
+                }
             }
+
+            return null;
         }
 
         foreach ($rows as $index => $row) {
@@ -1305,6 +1466,38 @@ class MikrotikRouterConfigurator
             );
         } catch (Throwable $exception) {
             $this->recordFailure($router, 'PATCH', $endpoint, $started, $exception, $correlationId);
+
+            throw $exception instanceof RouterProbeException
+                ? $exception
+                : RouterProbeException::fromThrowable($exception);
+        }
+    }
+
+    private function moveResource(
+        Client $client,
+        Router $router,
+        string $endpoint,
+        string $id,
+        string $destinationId,
+        string $correlationId,
+    ): void {
+        $payload = ['.id' => $id, 'destination' => $destinationId];
+        $started = hrtime(true);
+
+        try {
+            $client->post($endpoint, $payload);
+            $this->recorder->success(
+                $router,
+                'POST',
+                $endpoint,
+                $this->elapsedMs($started),
+                200,
+                ['fields' => array_keys($payload)],
+                [],
+                $correlationId
+            );
+        } catch (Throwable $exception) {
+            $this->recordFailure($router, 'POST', $endpoint, $started, $exception, $correlationId);
 
             throw $exception instanceof RouterProbeException
                 ? $exception

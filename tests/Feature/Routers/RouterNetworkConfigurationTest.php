@@ -6,6 +6,7 @@ use App\Contracts\RouterGateway;
 use App\Jobs\ConfigureRouterNetworkJob;
 use App\Jobs\CreateRouterHotspotUserProfileJob;
 use App\Jobs\EnableRouterHotspotCookieLoginJob;
+use App\Jobs\UpdateRouterHotspotUserProfileJob;
 use App\Models\Router;
 use App\Models\RouterJob;
 use App\Models\User;
@@ -208,6 +209,28 @@ class RouterNetworkConfigurationTest extends TestCase
             ->assertSee('MMUTech managed');
     }
 
+    public function test_it_hides_and_reveals_the_network_form_on_toggle(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->assertSet('networkFormVisible', false)
+            ->assertDontSee('Load managed values')
+            ->assertDontSee('LAN gateway address/prefix')
+            ->assertSee('Show form fields')
+            ->call('toggleNetworkForm')
+            ->assertSet('networkFormVisible', true)
+            ->assertSee('Hide form fields')
+            ->assertSee('LAN gateway address/prefix')
+            ->call('toggleNetworkForm')
+            ->assertSet('networkFormVisible', false)
+            ->assertDontSee('LAN gateway address/prefix');
+    }
+
     public function test_it_auto_detects_management_source_cidrs_without_queueing_a_router_job(): void
     {
         $user = User::factory()->create();
@@ -240,6 +263,27 @@ class RouterNetworkConfigurationTest extends TestCase
             'router_id' => $router->getKey(),
             'type' => 'configure_network',
         ]);
+    }
+
+    public function test_it_hides_and_reveals_the_hotspot_user_profile_form_on_toggle(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->assertSet('hotspotProfileFormVisible', false)
+            ->assertSee('Show profile form')
+            ->assertDontSee('Queue profile creation')
+            ->call('toggleHotspotProfileForm')
+            ->assertSet('hotspotProfileFormVisible', true)
+            ->assertSee('Hide profile form')
+            ->assertSee('Queue profile creation')
+            ->call('toggleHotspotProfileForm')
+            ->assertSet('hotspotProfileFormVisible', false)
+            ->assertDontSee('Queue profile creation');
     }
 
     public function test_it_queues_a_standalone_router_hotspot_user_profile(): void
@@ -351,7 +395,12 @@ class RouterNetworkConfigurationTest extends TestCase
                 $this->isType('string'),
             )
             ->willReturn([
-                ['name' => 'staff-access', 'rate_limit' => '512k/2048k', 'shared_users' => '2'],
+                [
+                    'id' => '*1',
+                    'name' => 'staff-access',
+                    'rate_limit' => '512k/2048k',
+                    'shared_users' => '2',
+                ],
             ]);
         $this->app->instance(RouterGateway::class, $gateway);
 
@@ -361,6 +410,120 @@ class RouterNetworkConfigurationTest extends TestCase
             ->call('discoverRouterHotspotUserProfiles')
             ->assertHasNoErrors()
             ->assertSee('staff-access')
-            ->assertSee('512k/2048k');
+            ->assertSee('512k/2048k')
+            ->assertSee('Edit profile');
+    }
+
+    public function test_it_loads_a_discovered_profile_into_the_form_for_editing(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->method('hotspotUserProfiles')->willReturn([
+            [
+                'id' => '*1',
+                'name' => 'staff-access',
+                'rate_limit' => '512k/2048k',
+                'shared_users' => '2',
+            ],
+        ]);
+        $this->app->instance(RouterGateway::class, $gateway);
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->call('discoverRouterHotspotUserProfiles')
+            ->call('editRouterHotspotUserProfile', '*1')
+            ->assertSet('hotspotProfileFormVisible', true)
+            ->assertSet('editingHotspotProfileId', '*1')
+            ->assertSet('editingHotspotProfileName', 'staff-access')
+            ->assertSet('hotspotProfileName', 'staff-access')
+            ->assertSet('hotspotProfileUploadSpeedKbps', '512')
+            ->assertSet('hotspotProfileDownloadSpeedKbps', '2048')
+            ->assertSet('hotspotProfileSharedUsers', '2')
+            ->assertSet('hotspotProfileExpectedRateLimit', '512k/2048k')
+            ->assertSet('hotspotProfileExpectedSharedUsers', '2')
+            ->assertSee('Queue profile update');
+    }
+
+    public function test_it_cancels_editing_a_discovered_profile(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->method('hotspotUserProfiles')->willReturn([
+            [
+                'id' => '*1',
+                'name' => 'staff-access',
+                'rate_limit' => '512k/2048k',
+                'shared_users' => '2',
+            ],
+        ]);
+        $this->app->instance(RouterGateway::class, $gateway);
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->call('discoverRouterHotspotUserProfiles')
+            ->call('editRouterHotspotUserProfile', '*1')
+            ->assertSet('editingHotspotProfileId', '*1')
+            ->call('resetHotspotProfileForm')
+            ->assertSet('editingHotspotProfileId', null)
+            ->assertSet('editingHotspotProfileName', null)
+            ->assertSet('hotspotProfileName', '')
+            ->assertSet('hotspotProfileUploadSpeedKbps', '')
+            ->assertSet('hotspotProfileDownloadSpeedKbps', '')
+            ->assertSet('hotspotProfileSharedUsers', '1')
+            ->assertSee('Queue profile creation')
+            ->assertDontSee('Cancel edit');
+    }
+
+    public function test_it_queues_a_profile_update_with_discovered_values_for_verification(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $gateway = $this->createMock(RouterGateway::class);
+        $gateway->method('hotspotUserProfiles')->willReturn([
+            [
+                'id' => '*1',
+                'name' => 'staff-access',
+                'rate_limit' => '512k/2048k',
+                'shared_users' => '2',
+            ],
+        ]);
+        $this->app->instance(RouterGateway::class, $gateway);
+        Bus::fake();
+
+        $this->actingAs($user);
+
+        Livewire::test('pages::routers.show', ['router' => $router])
+            ->call('discoverRouterHotspotUserProfiles')
+            ->call('editRouterHotspotUserProfile', '*1')
+            ->set('hotspotProfileUploadSpeedKbps', '1024')
+            ->set('hotspotProfileDownloadSpeedKbps', '4096')
+            ->set('hotspotProfileSharedUsers', '3')
+            ->call('saveRouterHotspotUserProfile')
+            ->assertHasNoErrors()
+            ->assertDispatched('app-alert');
+
+        Bus::assertDispatched(UpdateRouterHotspotUserProfileJob::class);
+        Bus::assertNotDispatched(CreateRouterHotspotUserProfileJob::class);
+
+        $routerJob = RouterJob::query()
+            ->where('router_id', $router->getKey())
+            ->where('type', 'update_hotspot_user_profile')
+            ->firstOrFail();
+
+        $this->assertSame([
+            'profile_id' => '*1',
+            'profile_name' => 'staff-access',
+            'expected_rate_limit' => '512k/2048k',
+            'expected_shared_users' => 2,
+            'rate_limit' => '1024k/4096k',
+            'shared_users' => 3,
+        ], $routerJob->payload);
     }
 }

@@ -269,7 +269,7 @@
         <section class="mm-card overflow-hidden" aria-labelledby="bridge-heading">
             <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                 <h2 id="bridge-heading" class="text-base font-semibold text-slate-900">LAN bridge</h2>
-                <p class="mt-1 text-sm text-slate-500">Create or reuse a bridge and add selected Ethernet interfaces. IP addresses, DHCP, firewall, and routing settings are not changed.</p>
+                <p class="mt-1 text-sm text-slate-500">Create or reuse a bridge, add unbridged Ethernet interfaces, or remove interfaces from the selected bridge. IP addresses, DHCP, firewall, and routing settings are not changed.</p>
             </div>
 
             <div class="space-y-5 px-5 py-5 sm:px-6">
@@ -277,7 +277,7 @@
                 @error('lanInterfaces') <p class="mm-error">{{ $message }}</p> @enderror
 
                 <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p class="text-sm text-slate-600">Discover the router's Ethernet ports before selecting which ones to bridge.</p>
+                    <p class="text-sm text-slate-600">Discover the router's Ethernet ports before selecting additions or removals.</p>
                     <button
                         type="button"
                         wire:click="discoverLanInterfaces"
@@ -295,42 +295,69 @@
                         <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">No physical Ethernet interfaces were returned by RouterOS.</p>
                     @else
                         <form wire:submit="applyBridgeConfiguration" class="space-y-5">
+                            @php
+                                $hasBridgeChanges = $selectedLanInterfaces !== [] || $selectedLanInterfacesToRemove !== [];
+                                $bridgeIsActive = $bridgeName !== '' && $availableBridgeNames->contains(
+                                    fn ($availableBridgeName): bool => $availableBridgeName === $bridgeName,
+                                );
+                            @endphp
+
                             <div>
-                                <label for="bridgeName" class="mm-label">Bridge name</label>
-                                <input id="bridgeName" type="text" wire:model.live="bridgeName" required maxlength="32" class="mm-input" autocomplete="off">
+                                <label for="bridgeName" class="mm-label">
+                                    Bridge name
+                                    @if ($bridgeIsActive)
+                                        <span class="ml-2 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Active</span>
+                                    @endif
+                                </label>
+                                <input
+                                    id="bridgeName"
+                                    type="text"
+                                    wire:model.live="bridgeName"
+                                    required
+                                    maxlength="32"
+                                    @class([
+                                        'mm-input',
+                                        'border-emerald-300 bg-emerald-50 text-emerald-900 focus:border-emerald-500 focus:ring-emerald-500' => $bridgeIsActive,
+                                    ])
+                                    autocomplete="off"
+                                >
                                 @error('bridgeName') <p class="mm-error">{{ $message }}</p> @enderror
+                                @if ($bridgeIsActive)
+                                    <p class="mt-1 text-xs text-emerald-700">{{ $bridgeName }} exists on this router.</p>
+                                @endif
                             </div>
 
                             <fieldset>
-                                <legend class="mm-label">Select LAN Ethernet interfaces</legend>
+                                <legend class="mm-label">Add Ethernet interfaces</legend>
+                                <p class="mt-1 text-xs text-slate-500">Only unbridged ports can be added. Ports in another bridge are disabled.</p>
                                 <div class="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                                     @foreach ($lanInterfaces as $interface)
                                         @php
-                                            $alreadyInTargetBridge = $interface['bridge'] === $bridgeName;
-                                            $alreadyInAnotherBridge = $interface['bridge'] !== null && ! $alreadyInTargetBridge;
+                                            $canAdd = $interface['bridge'] === null;
                                             $interfaceStatus = $interface['disabled'] ? 'Disabled' : ($interface['running'] ? 'Link up' : 'No link');
                                         @endphp
-                                        <label wire:key="lan-interface-{{ $interface['name'] }}" @class([
+                                        <label wire:key="lan-interface-add-{{ $interface['name'] }}" @class([
                                             'flex items-start gap-3 rounded-xl border p-3 text-sm',
-                                            'border-slate-200 hover:bg-slate-50' => ! $alreadyInAnotherBridge && ! $alreadyInTargetBridge,
-                                            'border-emerald-200 bg-emerald-50' => $alreadyInTargetBridge,
-                                            'border-slate-200 bg-slate-50 opacity-60' => $alreadyInAnotherBridge,
+                                            'border-slate-200 hover:bg-slate-50' => $canAdd,
+                                            'border-slate-200 bg-slate-50 opacity-60' => ! $canAdd,
                                         ])>
                                             <input
                                                 type="checkbox"
                                                 wire:model.live="selectedLanInterfaces"
                                                 value="{{ $interface['name'] }}"
                                                 class="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-600"
-                                                @disabled($alreadyInTargetBridge || $alreadyInAnotherBridge)
+                                                @disabled(! $canAdd)
                                             >
                                             <span class="min-w-0">
                                                 <span class="block font-mono font-semibold text-slate-800">{{ $interface['name'] }}</span>
                                                 <span class="mt-0.5 block text-xs text-slate-500">
                                                     {{ $interfaceStatus }}
-                                                    @if ($alreadyInTargetBridge)
-                                                        · Already in {{ $bridgeName }}
-                                                    @elseif ($alreadyInAnotherBridge)
-                                                        · Member of {{ $interface['bridge'] }}
+                                                    @if ($interface['bridge'] !== null)
+                                                        · Member of <span @class([
+                                                            'font-medium',
+                                                            'text-emerald-700' => $interface['bridge'] === $bridgeName,
+                                                            'text-slate-500' => $interface['bridge'] !== $bridgeName,
+                                                        ])>{{ $interface['bridge'] }}</span>
                                                     @endif
                                                 </span>
                                             </span>
@@ -343,9 +370,50 @@
                                 @endif
                             </fieldset>
 
+                            <fieldset>
+                                <legend class="mm-label">Remove Ethernet interfaces</legend>
+                                <p class="mt-1 text-xs text-slate-500">Only ports currently in {{ $bridgeName }} can be removed. Removing a port does not delete the bridge.</p>
+                                <div class="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                    @foreach ($lanInterfaces as $interface)
+                                        @php
+                                            $canRemove = $interface['bridge'] === $bridgeName;
+                                            $interfaceStatus = $interface['disabled'] ? 'Disabled' : ($interface['running'] ? 'Link up' : 'No link');
+                                        @endphp
+                                        <label wire:key="lan-interface-remove-{{ $interface['name'] }}" @class([
+                                            'flex items-start gap-3 rounded-xl border p-3 text-sm',
+                                            'border-rose-200 bg-rose-50' => $canRemove,
+                                            'border-slate-200 bg-slate-50 opacity-60' => ! $canRemove,
+                                        ])>
+                                            <input
+                                                type="checkbox"
+                                                wire:model.live="selectedLanInterfacesToRemove"
+                                                value="{{ $interface['name'] }}"
+                                                class="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-600"
+                                                @disabled(! $canRemove)
+                                            >
+                                            <span class="min-w-0">
+                                                <span class="block font-mono font-semibold text-slate-800">{{ $interface['name'] }}</span>
+                                                <span class="mt-0.5 block text-xs text-slate-500">
+                                                    {{ $interfaceStatus }}
+                                                    @if ($canRemove)
+                                                        · Member of {{ $bridgeName }}
+                                                    @elseif ($interface['bridge'] !== null)
+                                                        · Member of {{ $interface['bridge'] }}
+                                                    @endif
+                                                </span>
+                                            </span>
+                                        </label>
+                                    @endforeach
+                                </div>
+                                @error('selectedLanInterfacesToRemove') <p class="mm-error">{{ $message }}</p> @enderror
+                                @if ($errors->has('selectedLanInterfacesToRemove.*'))
+                                    <p class="mm-error">{{ $errors->first('selectedLanInterfacesToRemove.*') }}</p>
+                                @endif
+                            </fieldset>
+
                             <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="note">
                                 <p class="font-semibold">Check WAN and management connectivity before applying.</p>
-                                <p class="mt-1 text-xs leading-5">This change can interrupt access if you select the interface carrying the WAN or current management connection. MMUTech cannot determine your LAN/WAN roles automatically. Only the interfaces selected above will be added.</p>
+                                <p class="mt-1 text-xs leading-5">Adding or removing a port can interrupt access if it carries the WAN or current management connection. MMUTech cannot determine your LAN/WAN roles automatically. Only the selected additions and removals will be applied.</p>
                                 <label class="mt-3 flex items-start gap-2.5">
                                     <input type="checkbox" wire:model.live="managementImpactConfirmed" value="1" class="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-700 focus:ring-amber-600">
                                     <span class="text-xs font-medium">I have checked the selected ports and understand this may disconnect the router.</span>
@@ -355,8 +423,8 @@
 
                             @if ($pendingJob)
                                 <p class="text-sm text-amber-700">Wait for the current {{ str($pendingJob->type)->replace('_', ' ') }} job to finish before configuring the bridge.</p>
-                            @elseif (count($selectedLanInterfaces) === 0)
-                                <p class="text-sm text-slate-500">Select at least one available interface to continue.</p>
+                            @elseif (! $hasBridgeChanges)
+                                <p class="text-sm text-slate-500">Select at least one interface to add or remove to continue.</p>
                             @elseif (! $managementImpactConfirmed)
                                 <p class="text-sm text-slate-500">Confirm the connectivity warning to continue.</p>
                             @endif
@@ -367,9 +435,9 @@
                                     class="mm-btn-primary"
                                     wire:loading.attr="disabled"
                                     wire:target="applyBridgeConfiguration"
-                                    @disabled(count($selectedLanInterfaces) === 0 || ! $managementImpactConfirmed || $pendingJob !== null)
+                                    @disabled(! $hasBridgeChanges || ! $managementImpactConfirmed || $pendingJob !== null)
                                 >
-                                    <span wire:loading.remove wire:target="applyBridgeConfiguration">Queue bridge configuration</span>
+                                    <span wire:loading.remove wire:target="applyBridgeConfiguration">Queue bridge changes</span>
                                     <span wire:loading wire:target="applyBridgeConfiguration">Queueing…</span>
                                 </button>
                             </div>
@@ -382,9 +450,23 @@
 
     @if ($canEdit)
         <section class="mm-card overflow-hidden" aria-labelledby="network-setup-heading">
-            <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
-                <h2 id="network-setup-heading" class="text-base font-semibold text-slate-900">DHCP, NAT &amp; firewall</h2>
-                <p class="mt-1 text-sm text-slate-500">Configure LAN addressing and Internet sharing on the bridge above. All network values are required and are not pre-filled.</p>
+            <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <div>
+                    <h2 id="network-setup-heading" class="text-base font-semibold text-slate-900">DHCP, NAT &amp; firewall</h2>
+                    <p class="mt-1 text-sm text-slate-500">Configure LAN addressing and Internet sharing on the bridge above. All network values are required.</p>
+                </div>
+                <button
+                    type="button"
+                    wire:click="toggleNetworkForm"
+                    wire:loading.attr="disabled"
+                    wire:target="toggleNetworkForm"
+                    class="mm-btn-secondary shrink-0"
+                >
+                    <span wire:loading.remove wire:target="toggleNetworkForm">
+                        {{ $networkFormVisible ? 'Hide form fields' : 'Show form fields' }}
+                    </span>
+                    <span wire:loading wire:target="toggleNetworkForm">Updating…</span>
+                </button>
             </div>
 
             <div class="space-y-5 px-5 py-5 sm:px-6">
@@ -463,11 +545,12 @@
                     @endif
                 </div>
 
-                @if (! $lanInterfacesDiscovered)
-                    <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Discover Ethernet interfaces above before selecting the WAN port.</p>
-                @endif
+                @if ($networkFormVisible)
+                    @if (! $lanInterfacesDiscovered)
+                        <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Discover Ethernet interfaces above before selecting the WAN port.</p>
+                    @endif
 
-                <form wire:submit="configureNetwork" class="space-y-5">
+                    <form wire:submit="configureNetwork" class="space-y-5">
                     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <div>
                             <label for="networkBridgeName" class="mm-label">LAN bridge</label>
@@ -536,7 +619,7 @@
 
                     <div class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="note">
                         <p class="font-semibold">Review the firewall impact before applying.</p>
-                        <p class="mt-1 text-xs leading-5">The WAN must already have IPv4 addressing and a default route; MMUTech does not invent or configure upstream settings. MMUTech adds stateful LAN-to-WAN rules and blocks new unsolicited WAN traffic to the router and forwarded hosts, while keeping existing rules. The WAN input drop can interrupt VPNs or other services hosted on the router; existing rules may also affect policy order. Management CIDRs must include the MMUTech server's source address, or RouterOS API access may be lost. Review the report for rule-order and upstream-routing warnings.</p>
+                        <p class="mt-1 text-xs leading-5">The WAN must already have IPv4 addressing and a default route; MMUTech does not invent or configure upstream settings. The queued job updates MMUTech-managed entries in place, adds any missing managed rules, and keeps unrelated rules. The WAN input drop can interrupt VPNs or other services hosted on the router; existing rules may also affect policy order. Management CIDRs must include the MMUTech server's source address, or RouterOS API access may be lost. Review the report for rule-order and upstream-routing warnings.</p>
                         <label class="mt-3 flex items-start gap-2.5">
                             <input type="checkbox" wire:model.live="networkImpactConfirmed" value="1" class="mt-0.5 h-4 w-4 rounded border-amber-400 text-amber-700 focus:ring-amber-600">
                             <span class="text-xs font-medium">I verified the WAN, LAN, IP pool, DNS, and management networks and understand the firewall may interrupt existing services.</span>
@@ -575,7 +658,10 @@
                             <span wire:loading wire:target="configureNetwork">Queueing…</span>
                         </button>
                     </div>
-                </form>
+                    </form>
+                @else
+                    <p class="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">Use “Show form fields” to enter or modify the DHCP, NAT, and firewall configuration.</p>
+                @endif
 
                 @if ($networkCommands !== [])
                     <div
@@ -839,9 +925,23 @@
 
     @if ($canEdit)
         <section class="mm-card overflow-hidden" aria-labelledby="hotspot-profiles-heading">
-            <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
-                <h2 id="hotspot-profiles-heading" class="text-base font-semibold text-slate-900">Hotspot user profiles</h2>
-                <p class="mt-1 text-sm text-slate-500">Create user profiles on this router, then map each plan to an existing profile from the plan form. Voucher generation snapshots the selected mapping.</p>
+            <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <div>
+                    <h2 id="hotspot-profiles-heading" class="text-base font-semibold text-slate-900">Hotspot user profiles</h2>
+                    <p class="mt-1 text-sm text-slate-500">Create user profiles on this router, then map each plan to an existing profile from the plan form. Voucher generation snapshots the selected mapping.</p>
+                </div>
+                <button
+                    type="button"
+                    wire:click="toggleHotspotProfileForm"
+                    wire:loading.attr="disabled"
+                    wire:target="toggleHotspotProfileForm"
+                    class="mm-btn-secondary shrink-0"
+                >
+                    <span wire:loading.remove wire:target="toggleHotspotProfileForm">
+                        {{ $hotspotProfileFormVisible ? 'Hide profile form' : 'Show profile form' }}
+                    </span>
+                    <span wire:loading wire:target="toggleHotspotProfileForm">Updating…</span>
+                </button>
             </div>
 
             <div class="space-y-4 px-5 py-5 sm:px-6">
@@ -863,42 +963,65 @@
                     </button>
                 </div>
 
-                <p class="text-xs leading-5 text-slate-500">Optional rate limits are entered as upload and download kbps. Both must be set together; leave both blank for no rate cap.</p>
+                @if ($hotspotProfileFormVisible)
+                    <p class="text-xs leading-5 text-slate-500">Optional rate limits are entered as upload and download kbps. Both must be set together; leave both blank for no rate cap.</p>
 
-                <form wire:submit="createRouterHotspotUserProfile" class="space-y-4 rounded-xl border border-slate-200 p-4">
-                    <div class="grid gap-4 sm:grid-cols-2">
-                        <div class="sm:col-span-2">
-                            <label for="hotspot-profile-name" class="mm-label">Profile name</label>
-                            <input id="hotspot-profile-name" type="text" wire:model="hotspotProfileName" maxlength="64" required class="mm-input">
-                            @error('hotspotProfileName') <p class="mm-error">{{ $message }}</p> @enderror
-                        </div>
+                    <form wire:submit="saveRouterHotspotUserProfile" class="space-y-4 rounded-xl border border-slate-200 p-4">
                         <div>
-                            <label for="hotspot-profile-upload" class="mm-label">Upload limit (kbps)</label>
-                            <input id="hotspot-profile-upload" type="number" wire:model="hotspotProfileUploadSpeedKbps" min="1" class="mm-input">
-                            @error('hotspotProfileUploadSpeedKbps') <p class="mm-error">{{ $message }}</p> @enderror
+                            <h3 class="text-sm font-semibold text-slate-900">
+                                {{ $editingHotspotProfileId !== null ? 'Edit profile '.$editingHotspotProfileName : 'Create profile' }}
+                            </h3>
+                            <p class="mt-1 text-xs leading-5 text-slate-500">Editing a profile changes future RouterOS sessions. Vouchers already generated keep the settings they snapshotted at creation.</p>
                         </div>
-                        <div>
-                            <label for="hotspot-profile-download" class="mm-label">Download limit (kbps)</label>
-                            <input id="hotspot-profile-download" type="number" wire:model="hotspotProfileDownloadSpeedKbps" min="1" class="mm-input">
-                            @error('hotspotProfileDownloadSpeedKbps') <p class="mm-error">{{ $message }}</p> @enderror
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            <div class="sm:col-span-2">
+                                <label for="hotspot-profile-name" class="mm-label">Profile name</label>
+                                <input id="hotspot-profile-name" type="text" wire:model="hotspotProfileName" maxlength="64" required class="mm-input" @readonly($editingHotspotProfileId !== null)>
+                                @error('hotspotProfileName') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspot-profile-upload" class="mm-label">Upload limit (kbps)</label>
+                                <input id="hotspot-profile-upload" type="number" wire:model="hotspotProfileUploadSpeedKbps" min="1" class="mm-input">
+                                @error('hotspotProfileUploadSpeedKbps') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspot-profile-download" class="mm-label">Download limit (kbps)</label>
+                                <input id="hotspot-profile-download" type="number" wire:model="hotspotProfileDownloadSpeedKbps" min="1" class="mm-input">
+                                @error('hotspotProfileDownloadSpeedKbps') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                            <div>
+                                <label for="hotspot-profile-shared-users" class="mm-label">Shared users</label>
+                                <input id="hotspot-profile-shared-users" type="number" wire:model="hotspotProfileSharedUsers" min="1" required class="mm-input">
+                                @error('hotspotProfileSharedUsers') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
                         </div>
-                        <div>
-                            <label for="hotspot-profile-shared-users" class="mm-label">Shared users</label>
-                            <input id="hotspot-profile-shared-users" type="number" wire:model="hotspotProfileSharedUsers" min="1" required class="mm-input">
-                            @error('hotspotProfileSharedUsers') <p class="mm-error">{{ $message }}</p> @enderror
+                        <div class="flex flex-wrap gap-2">
+                            <button
+                                type="submit"
+                                wire:loading.attr="disabled"
+                                wire:target="saveRouterHotspotUserProfile"
+                                class="mm-btn-primary"
+                                @disabled($pendingJob !== null)
+                            >
+                                <span wire:loading.remove wire:target="saveRouterHotspotUserProfile">
+                                    {{ $editingHotspotProfileId !== null ? 'Queue profile update' : 'Queue profile creation' }}
+                                </span>
+                                <span wire:loading wire:target="saveRouterHotspotUserProfile">Queueing…</span>
+                            </button>
+                            @if ($editingHotspotProfileId !== null)
+                                <button
+                                    type="button"
+                                    wire:click="resetHotspotProfileForm"
+                                    wire:loading.attr="disabled"
+                                    wire:target="resetHotspotProfileForm"
+                                    class="mm-btn-secondary"
+                                >
+                                    Cancel edit
+                                </button>
+                            @endif
                         </div>
-                    </div>
-                    <button
-                        type="submit"
-                        wire:loading.attr="disabled"
-                        wire:target="createRouterHotspotUserProfile"
-                        class="mm-btn-primary"
-                        @disabled($pendingJob !== null)
-                    >
-                        <span wire:loading.remove wire:target="createRouterHotspotUserProfile">Queue profile creation</span>
-                        <span wire:loading wire:target="createRouterHotspotUserProfile">Queueing…</span>
-                    </button>
-                </form>
+                    </form>
+                @endif
 
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -919,11 +1042,25 @@
                 @if ($hotspotUserProfilesDiscovered)
                     <div class="overflow-hidden rounded-xl border border-slate-200">
                         @forelse ($hotspotUserProfiles as $profile)
-                            <div class="flex flex-col gap-1 border-b border-slate-100 px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
-                                <span class="font-mono text-sm text-slate-900">{{ $profile['name'] }}</span>
-                                <span class="text-xs text-slate-500">
-                                    Rate limit: {{ $profile['rate_limit'] ?? 'none' }} · Shared users: {{ $profile['shared_users'] }}
-                                </span>
+                            <div class="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <span class="font-mono text-sm text-slate-900">{{ $profile['name'] }}</span>
+                                    <span class="block text-xs text-slate-500">
+                                        Rate limit: {{ $profile['rate_limit'] ?? 'none' }} · Shared users: {{ $profile['shared_users'] }}
+                                    </span>
+                                </div>
+                                @if (filled($profile['id'] ?? null))
+                                    <button
+                                        type="button"
+                                        wire:click="editRouterHotspotUserProfile(@js($profile['id']))"
+                                        wire:loading.attr="disabled"
+                                        wire:target="editRouterHotspotUserProfile"
+                                        class="mm-btn-secondary shrink-0"
+                                        @disabled($pendingJob !== null)
+                                    >
+                                        Edit profile
+                                    </button>
+                                @endif
                             </div>
                         @empty
                             <p class="px-4 py-3 text-sm text-slate-600">No Hotspot user profiles were found on this router.</p>
@@ -981,7 +1118,7 @@
                             <p class="mm-help">Multiple private IPs were found. Select the one MMUTech uses to reach this router.</p>
                         @endif
                     </div>
-                    <button
+                    <!-- <button
                         type="button"
                         wire:click="discoverPrivateIpv4Addresses"
                         wire:loading.attr="disabled"
@@ -990,16 +1127,20 @@
                     >
                         <span wire:loading.remove wire:target="discoverPrivateIpv4Addresses">Detect private IP</span>
                         <span wire:loading wire:target="discoverPrivateIpv4Addresses">Detecting…</span>
-                    </button>
+                    </button> -->
                 </div>
 
-                <pre x-ref="routerSetupCommands" class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100"><code>/certificate add name=router-cert common-name={{ $certificatePrivateIp !== '' ? $certificatePrivateIp : '<ROUTER_PRIVATE_IP>' }} key-size=2048 days-valid=3650
-/certificate sign router-cert name=router-cert
-/ip service set www-ssl certificate=router-cert address=&lt;ALLOWED_MANAGEMENT_CIDRS&gt;
-/ip service enable www-ssl
-/certificate print detail
-/user group add name=mmutech-api policy=read,write,rest-api
-/user add name=mmutech-api group=mmutech-api address=&lt;MMUTECH_SERVER_CIDR&gt; password="&lt;UNIQUE_STRONG_PASSWORD&gt;"</code></pre>
+                <pre x-ref="routerSetupCommands" class="overflow-x-auto rounded-xl bg-slate-950 p-4 text-xs leading-6 text-slate-100">
+                    <code>
+        /certificate add name=router-cert common-name=192.168.88.1 key-size=2048 days-valid=3650
+        /certificate sign router-cert name=router-cert
+        /ip service set www-ssl certificate=router-cert address=192.168.2.70
+        /ip service enable www-ssl
+        /certificate print detail
+        <!-- /user group add name=mmutech-api policy=read,write,rest-api -->
+        <!-- /user add name=mmutech-api group=mmutech-api address=&lt;MMUTECH_SERVER_CIDR&gt; password="&lt;UNIQUE_STRONG_PASSWORD&gt;" -->
+                    </code>
+                </pre>
 
                 <p class="text-xs leading-5 text-amber-800">
                     The certificate generated by these commands is self-signed. For production, use a certificate trusted by the MMUTech host or install the issuing CA in its trust store; keep TLS verification enabled. Use the new username and password when registering or editing this router in MMUTech.
@@ -1049,65 +1190,144 @@
         </section>
     @endif
 
-    @if ($canGrant || $canRevoke)
-        <section class="mm-card overflow-hidden" aria-labelledby="access-heading">
-            <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                <div>
-                    <h2 id="access-heading" class="text-base font-semibold text-slate-900">Explicit router access</h2>
-                    <p class="mt-0.5 text-xs text-slate-500">Only super administrators can add or remove access. Roles alone do not grant router visibility.</p>
-                </div>
-            </div>
-
-            <div class="divide-y divide-slate-100">
-                @forelse ($router->users as $member)
-                    <div class="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                        <div class="min-w-0">
-                            <p class="truncate text-sm font-medium text-slate-900">{{ $member->name }} @if ($member->id === auth()->id())<span class="text-xs font-normal text-slate-500">(you)</span>@endif</p>
-                            <p class="truncate text-xs text-slate-500">{{ $member->email }} · {{ implode(', ', $member->roleLabels()) ?: 'No role' }}</p>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <span class="text-xs text-slate-500">Granted {{ $member->pivot?->created_at?->diffForHumans() ?? 'previously' }}</span>
-                            @if ($canRevoke)
-                                <button
-                                    type="button"
-                                    wire:click="openRevokeAccessConfirmation({{ $member->getKey() }})"
-                                    wire:loading.attr="disabled"
-                                    class="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
-                                >
-                                    Revoke
-                                </button>
-                            @endif
-                        </div>
-                    </div>
-                @empty
-                    <p class="px-5 py-5 text-sm text-slate-500 sm:px-6">No explicit access assignments. Only super administrators can currently reach this router.</p>
-                @endforelse
-            </div>
-
-            @if ($canGrant)
-                <form wire:submit="grantAccess" class="border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-6">
-                    <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
-                        <div class="flex-1">
-                            <label for="selectedUserId" class="mm-label">Grant access to staff member</label>
-                            <select id="selectedUserId" wire:model="selectedUserId" class="mm-input">
-                                <option value="">Choose a staff member</option>
-                                @foreach ($staff as $member)
-                                    <option value="{{ $member->id }}">{{ $member->name }} — {{ $member->email }}</option>
-                                @endforeach
-                            </select>
-                            @error('selectedUserId') <p class="mm-error">{{ $message }}</p> @enderror
-                            @if ($staff->isEmpty())
-                                <p class="mm-help">Every eligible staff member already has access.</p>
-                            @endif
-                        </div>
-                        <button type="submit" class="mm-btn-primary" @disabled($staff->isEmpty())>Grant access</button>
-                    </div>
-                </form>
-            @endif
-        </section>
-    @endif
-
     <div class="grid gap-6 xl:grid-cols-2">
+        @if ($canGrant || $canRevoke)
+            <section class="mm-card overflow-hidden" aria-labelledby="access-heading">
+                <div class="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                    <div>
+                        <h2 id="access-heading" class="text-base font-semibold text-slate-900">Explicit router access</h2>
+                        <p class="mt-0.5 text-xs text-slate-500">Only super administrators can add or remove access. Roles alone do not grant router visibility.</p>
+                    </div>
+                </div>
+
+                <div class="divide-y divide-slate-100">
+                    @forelse ($router->users as $member)
+                        <div class="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                            <div class="min-w-0">
+                                <p class="truncate text-sm font-medium text-slate-900">{{ $member->name }} @if ($member->id === auth()->id())<span class="text-xs font-normal text-slate-500">(you)</span>@endif</p>
+                                <p class="truncate text-xs text-slate-500">{{ $member->email }} · {{ implode(', ', $member->roleLabels()) ?: 'No role' }}</p>
+                            </div>
+                            <div class="flex items-center gap-3">
+                                <span class="text-xs text-slate-500">Granted {{ $member->pivot?->created_at?->diffForHumans() ?? 'previously' }}</span>
+                                @if ($canRevoke)
+                                    <button
+                                        type="button"
+                                        wire:click="openRevokeAccessConfirmation({{ $member->getKey() }})"
+                                        wire:loading.attr="disabled"
+                                        class="rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+                                    >
+                                        Revoke
+                                    </button>
+                                @endif
+                            </div>
+                        </div>
+                    @empty
+                        <p class="px-5 py-5 text-sm text-slate-500 sm:px-6">No explicit access assignments. Only super administrators can currently reach this router.</p>
+                    @endforelse
+                </div>
+
+                @if ($canGrant)
+                    <form wire:submit="grantAccess" class="border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-6">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+                            <div class="flex-1">
+                                <label for="selectedUserId" class="mm-label">Grant access to staff member</label>
+                                <select id="selectedUserId" wire:model="selectedUserId" class="mm-input">
+                                    <option value="">Choose a staff member</option>
+                                    @foreach ($staff as $member)
+                                        <option value="{{ $member->id }}">{{ $member->name }} — {{ $member->email }}</option>
+                                    @endforeach
+                                </select>
+                                @error('selectedUserId') <p class="mm-error">{{ $message }}</p> @enderror
+                                @if ($staff->isEmpty())
+                                    <p class="mm-help">Every eligible staff member already has access.</p>
+                                @endif
+                            </div>
+                            <button type="submit" class="mm-btn-primary" @disabled($staff->isEmpty())>Grant access</button>
+                        </div>
+                    </form>
+                @endif
+            </section>
+        @endif
+
+        <section class="mm-card overflow-hidden" aria-labelledby="backup-heading">
+            <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
+                <h2 id="backup-heading" class="text-base font-semibold text-slate-900">Configuration backup and restore</h2>
+                <p class="mt-0.5 text-xs text-slate-500">Export a RouterOS .rsc file, restore an export, or remove MMUTech-managed configuration</p>
+            </div>
+            <div class="space-y-5 px-5 py-5 sm:px-6">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-slate-900">Download backup</p>
+                        <p class="mt-0.5 text-xs leading-5 text-slate-500">Exports the RouterOS configuration to .rsc, reads it back, then removes the temporary file from the router. Sensitive values such as passwords are not included by RouterOS.</p>
+                    </div>
+                    <button
+                        type="button"
+                        wire:click="downloadBackup"
+                        wire:loading.attr="disabled"
+                        wire:target="downloadBackup"
+                        @disabled(! $canEdit || $pendingJob !== null)
+                        class="mm-btn-secondary shrink-0"
+                    >
+                        Download .rsc backup
+                    </button>
+                </div>
+
+                <div class="border-t border-slate-200 pt-5">
+                    <p class="text-sm font-medium text-slate-900">Restore from .rsc</p>
+                    <p class="mt-0.5 text-xs leading-5 text-slate-500">The queued job uploads the file, runs a RouterOS dry-run, imports it, and verifies the import. RouterOS accepts files just under 60 KiB through REST; larger exports need SFTP or FTP.</p>
+                    <div class="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+                        <div class="min-w-0 flex-1">
+                            <label for="restore_file" class="mm-label">RouterOS export (.rsc)</label>
+                            <input
+                                id="restore_file"
+                                type="file"
+                                wire:model="restoreFile"
+                                accept=".rsc,text/plain"
+                                @disabled(! $canEdit || $pendingJob !== null)
+                                class="mm-input mt-1"
+                            >
+                            @error('restoreFile')
+                                <p class="mt-1 text-xs text-red-600">{{ $message }}</p>
+                            @enderror
+                        </div>
+                        <button
+                            type="button"
+                            wire:click="openRestoreConfirmation"
+                            wire:loading.attr="disabled"
+                            wire:target="openRestoreConfirmation"
+                            @disabled(! $canEdit || $pendingJob !== null)
+                            class="mm-btn-primary shrink-0"
+                        >
+                            Review restore
+                        </button>
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-200 pt-5">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-red-700">Reset MMUTech-managed configuration</p>
+                            <p class="mt-0.5 text-xs leading-5 text-slate-500">Removes MMUTech-managed identities, pools, DHCP/NAT/firewall entries, managed bridge members, and HotSpot servers/profiles. The LAN management address, management firewall rules, and voucher accounts are preserved. Unrelated RouterOS settings are left alone. LAN client connectivity may stop until the network is configured again.</p>
+                        </div>
+                        <button
+                            type="button"
+                            wire:click="openResetConfirmation"
+                            wire:loading.attr="disabled"
+                            wire:target="openResetConfirmation"
+                            @disabled(! $canEdit || $pendingJob !== null)
+                            class="mm-btn-danger shrink-0"
+                        >
+                            Reset managed configuration
+                        </button>
+                    </div>
+                </div>
+
+                @if ($pendingJob !== null)
+                    <p class="rounded-xl bg-amber-50 px-4 py-3 text-xs text-amber-800">Wait for the current {{ str($pendingJob->type)->replace('_', ' ')->lower() }} job to finish before using these controls.</p>
+                @endif
+            </div>
+        </section>
+
         <section class="mm-card overflow-hidden" aria-labelledby="health-heading">
             <div class="border-b border-slate-200 px-5 py-4 sm:px-6">
                 <h2 id="health-heading" class="text-base font-semibold text-slate-900">Health history</h2>
@@ -1193,21 +1413,39 @@
                             Enable cookie-based login?
                         @elseif ($confirmationDialog === 'hotspot_server')
                             Configure HotSpot server?
+                        @elseif ($confirmationDialog === 'reset')
+                            Reset MMUTech-managed configuration?
+                        @elseif ($confirmationDialog === 'restore')
+                            Restore configuration from .rsc?
                         @else
                             Revoke router access?
                         @endif
                     </h2>
-                    <p class="mt-3 text-sm leading-6 text-slate-600">
+                    <div class="mt-3 space-y-3 text-sm leading-6 text-slate-600">
                         @if ($confirmationDialog === 'archive')
-                            Archive {{ $router->name }}? It will be removed from active monitoring. The record is retained and can be restored by an administrator.
+                            <p>Archive {{ $router->name }}? It will be removed from active monitoring. The record is retained and can be restored by an administrator.</p>
                         @elseif ($confirmationDialog === 'cookie_login')
-                            Enable cookie-based login on all HotSpot server profiles? Existing login methods will remain enabled.
+                            <p>Enable cookie-based login on all HotSpot server profiles? Existing login methods will remain enabled.</p>
                         @elseif ($confirmationDialog === 'hotspot_server')
-                            Create or update the HotSpot server {{ $hotspotServerName }} on {{ $hotspotServerInterface }} using the {{ $hotspotServerPool }} address pool and the {{ $hotspotServerProfile }} profile? The server name and address pool both come from this router's identity. A matching server on that interface will be updated and read back.
+                            <p>Create or update the HotSpot server {{ $hotspotServerName }} on {{ $hotspotServerInterface }} using the {{ $hotspotServerPool }} address pool and the {{ $hotspotServerProfile }} profile? The server name and address pool both come from this router's identity. A matching server on that interface will be updated and read back.</p>
+                        @elseif ($confirmationDialog === 'reset')
+                            <p>This removes only MMUTech-managed objects and verifies the result. The LAN management address, management firewall rules, and voucher users are preserved. Unrelated RouterOS configuration is left in place, but LAN client connectivity may stop until the network is configured again.</p>
+                            <div>
+                                <label for="reset_confirmation" class="mm-label">Type <span class="font-mono">{{ $hotspotServerName }}</span> to confirm</label>
+                                <input id="reset_confirmation" type="text" wire:model="resetConfirmation" autocomplete="off" class="mm-input mt-1" placeholder="{{ $hotspotServerName }}">
+                                @error('resetConfirmation') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
+                        @elseif ($confirmationDialog === 'restore')
+                            <p>The selected script will be uploaded to the router, checked with a RouterOS dry-run, imported, and read back. Import adds to the existing configuration and stops at the first failing line. Take a backup first if you may need to undo this restore.</p>
+                            <div>
+                                <label for="restore_confirmation" class="mm-label">Type <span class="font-mono">{{ $hotspotServerName }}</span> to confirm</label>
+                                <input id="restore_confirmation" type="text" wire:model="restoreConfirmation" autocomplete="off" class="mm-input mt-1" placeholder="{{ $hotspotServerName }}">
+                                @error('restoreConfirmation') <p class="mm-error">{{ $message }}</p> @enderror
+                            </div>
                         @else
-                            Revoke {{ $router->users->firstWhere('id', $confirmationMemberId)?->name ?? 'this staff member' }}'s access to {{ $router->name }}?
+                            <p>Revoke {{ $router->users->firstWhere('id', $confirmationMemberId)?->name ?? 'this staff member' }}'s access to {{ $router->name }}?</p>
                         @endif
-                    </p>
+                    </div>
                     <div class="mt-6 flex justify-end gap-2">
                         <button type="button" wire:click="closeConfirmationDialog" class="mm-btn-secondary">Cancel</button>
                         @if ($confirmationDialog === 'archive')
@@ -1216,6 +1454,10 @@
                             <button type="button" wire:click="enableHotspotCookieLogin" wire:loading.attr="disabled" class="mm-btn-primary">Enable auto-login</button>
                         @elseif ($confirmationDialog === 'hotspot_server')
                             <button type="button" wire:click="configureHotspotServer" wire:loading.attr="disabled" class="mm-btn-primary">Queue configuration</button>
+                        @elseif ($confirmationDialog === 'reset')
+                            <button type="button" wire:click="resetManagedConfiguration" wire:loading.attr="disabled" class="mm-btn-danger">Queue managed reset</button>
+                        @elseif ($confirmationDialog === 'restore')
+                            <button type="button" wire:click="restoreConfiguration" wire:loading.attr="disabled" class="mm-btn-danger">Queue restore</button>
                         @else
                             <button type="button" wire:click="revokeAccess({{ $confirmationMemberId }})" wire:loading.attr="disabled" class="mm-btn-danger">Revoke access</button>
                         @endif

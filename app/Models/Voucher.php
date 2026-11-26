@@ -198,10 +198,32 @@ class Voucher extends Model
             return 'Unlimited data';
         }
 
-        $bytes = max(0, (int) $this->data_allowance_bytes);
+        return self::formatBytes(max(0, (int) $this->data_allowance_bytes));
+    }
+
+    public static function formatDuration(int $seconds): string
+    {
+        $seconds = max(0, $seconds);
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+        $remainingSeconds = $seconds % 60;
+
+        if ($hours > 0) {
+            return sprintf('%dh %dm %ds', $hours, $minutes, $remainingSeconds);
+        }
+
+        if ($minutes > 0) {
+            return sprintf('%dm %ds', $minutes, $remainingSeconds);
+        }
+
+        return $remainingSeconds.'s';
+    }
+
+    public static function formatBytes(int $bytes): string
+    {
         $units = ['B', 'KB', 'MB', 'GB', 'TB'];
         $power = 0;
-        $value = (float) $bytes;
+        $value = (float) max(0, $bytes);
 
         while ($value >= 1024 && $power < count($units) - 1) {
             $value /= 1024;
@@ -214,6 +236,7 @@ class Voucher extends Model
     private function hasExhaustedTimeAllowance(): bool
     {
         return $this->time_allowance_seconds !== null
+            && $this->time_allowance_seconds > 0
             && $this->time_used_seconds >= $this->time_allowance_seconds;
     }
 

@@ -55,6 +55,34 @@ class PlanRouterTest extends TestCase
         ]);
     }
 
+    public function test_create_form_offers_fixed_connected_time_limits_and_stores_no_maximum(): void
+    {
+        $admin = User::factory()->create();
+        $admin->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $this->mockRouterProfiles(['daily-1gb'], '512k/2M');
+
+        $this->actingAs($admin);
+
+        Livewire::test('pages::plans.create')
+            ->assertSee('1800 — 30 minutes')
+            ->assertSee('86400 — 24 hours')
+            ->assertSee('0 — No maximum time limit')
+            ->set('name', 'No time limit')
+            ->set('router_id', (string) $router->id)
+            ->call('loadHotspotProfiles')
+            ->set('hotspot_profile', 'daily-1gb')
+            ->set('price', '500')
+            ->set('currency', 'NGN')
+            ->set('data_allowance_mb', '1024')
+            ->set('time_allowance_seconds', '0')
+            ->call('syncHotspotProfileSpeeds')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $this->assertSame(0, Plan::firstOrFail()->time_allowance_seconds);
+    }
+
     public function test_generated_plan_codes_are_unique(): void
     {
         $admin = User::factory()->create();
@@ -269,6 +297,7 @@ class PlanRouterTest extends TestCase
             ->call('loadHotspotProfiles')
             ->set('hotspot_profile', 'new-profile')
             ->set('time_allowance_seconds', '61')
+            ->assertSee('Custom limit — 61 second(s)')
             ->call('save')
             ->assertHasNoErrors();
 
@@ -294,6 +323,34 @@ class PlanRouterTest extends TestCase
         $this->assertSame('default', $provisionedVoucher->refresh()->hotspot_profile);
         $this->assertSame(128, $provisionedVoucher->refresh()->upload_speed_kbps);
         $this->assertSame(256, $provisionedVoucher->refresh()->download_speed_kbps);
+    }
+
+    public function test_edit_form_preserves_a_zero_connected_time_allowance(): void
+    {
+        $admin = User::factory()->create();
+        $admin->assignRole('super-admin');
+        $router = Router::factory()->create();
+        $plan = Plan::factory()->create([
+            'router_id' => $router->id,
+            'time_allowance_seconds' => 0,
+        ]);
+        RouterPlanProfile::query()->create([
+            'router_id' => $router->id,
+            'plan_id' => $plan->id,
+            'hotspot_profile' => 'daily-1gb',
+        ]);
+        $this->mockRouterProfiles(['daily-1gb'], '512k/2M');
+
+        $this->actingAs($admin);
+
+        Livewire::test('pages::plans.edit', ['plan' => $plan])
+            ->assertSet('time_allowance_seconds', '0')
+            ->assertSee('0 — No maximum time limit')
+            ->call('loadHotspotProfiles')
+            ->call('save')
+            ->assertHasNoErrors();
+
+        $this->assertSame(0, $plan->fresh()->time_allowance_seconds);
     }
 
     public function test_network_admin_cannot_view_plan_for_unassigned_router(): void

@@ -27,7 +27,22 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
 
     public function updatedRouterId(): void
     {
-        $this->plan_id = '';
+        if (
+            $this->plan_id !== ''
+            && ! Plan::query()
+                ->whereKey($this->plan_id)
+                ->where('router_id', $this->router_id)
+                ->exists()
+        ) {
+            $this->plan_id = '';
+        }
+
+        $this->resetErrorBag(['router_id', 'plan_id']);
+    }
+
+    public function updatedPlanId(): void
+    {
+        $this->resetErrorBag('plan_id');
     }
 
     public function generate(AuditLogger $audit): void
@@ -62,8 +77,8 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
             return;
         }
 
-        if ($plan->time_allowance_seconds !== null && $plan->time_allowance_seconds <= 0) {
-            $this->addError('plan_id', 'The plan connected-time allowance must be greater than zero seconds.');
+        if ($plan->time_allowance_seconds !== null && $plan->time_allowance_seconds < 0) {
+            $this->addError('plan_id', 'The plan connected-time allowance cannot be negative.');
 
             return;
         }
@@ -141,7 +156,7 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
     <form wire:submit="generate" class="mm-card space-y-5 p-6">
         <div>
             <label class="mm-label">Router *</label>
-            <select wire:model="router_id" class="mm-input">
+            <select wire:model.live="router_id" class="mm-input">
                 <option value="">Select router</option>
                 @foreach ($routers as $r)
                     <option value="{{ $r->id }}">{{ $r->name }} ({{ $r->host }})</option>
@@ -152,7 +167,7 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
 
         <div>
             <label class="mm-label">Plan *</label>
-            <select wire:model="plan_id" class="mm-input">
+            <select wire:model.live="plan_id" class="mm-input">
                 <option value="">Select plan</option>
                 @foreach ($plans as $p)
                     <option value="{{ $p->id }}">

@@ -61,11 +61,13 @@ class ConfigureRouterBridgeJob implements ShouldQueue
         $configuration = $job->payload ?? [];
         $bridgeName = $configuration['bridge_name'] ?? null;
         $interfaces = $configuration['interfaces'] ?? null;
+        $interfacesToRemove = $configuration['remove_interfaces'] ?? [];
 
         if (
             ! is_string($bridgeName)
             || ! is_array($interfaces)
-            || $interfaces === []
+            || ! is_array($interfacesToRemove)
+            || ($interfaces === [] && $interfacesToRemove === [])
             || ($configuration['management_impact_confirmed'] ?? false) !== true
         ) {
             $jobs->markFailed($job, 'Bridge configuration is invalid or missing the required management-impact confirmation.');
@@ -73,17 +75,21 @@ class ConfigureRouterBridgeJob implements ShouldQueue
             return;
         }
 
-        foreach ($interfaces as $interface) {
-            if (! is_string($interface) || $interface === '') {
-                $jobs->markFailed($job, 'Bridge configuration contains an invalid interface name.');
+        foreach ([$interfaces, $interfacesToRemove] as $selection) {
+            foreach ($selection as $interface) {
+                if (! is_string($interface) || $interface === '') {
+                    $jobs->markFailed($job, 'Bridge configuration contains an invalid interface name.');
 
-                return;
+                    return;
+                }
             }
         }
 
         if (
             preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,31}\z/', $bridgeName) !== 1
             || count(array_unique($interfaces)) !== count($interfaces)
+            || count(array_unique($interfacesToRemove)) !== count($interfacesToRemove)
+            || array_intersect($interfaces, $interfacesToRemove) !== []
         ) {
             $jobs->markFailed($job, 'Bridge configuration contains an invalid bridge name or duplicate interfaces.');
 
@@ -91,7 +97,13 @@ class ConfigureRouterBridgeJob implements ShouldQueue
         }
 
         $jobs->markRunning($job);
-        $gateway->configureBridge($router, $bridgeName, array_values($interfaces), $correlationId);
+        $gateway->configureBridge(
+            $router,
+            $bridgeName,
+            array_values($interfaces),
+            $correlationId,
+            array_values($interfacesToRemove),
+        );
         $jobs->markSucceeded($job);
     }
 

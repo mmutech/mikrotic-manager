@@ -81,6 +81,58 @@ class MikrotikRouterGatewayTest extends TestCase
         ], $interfaces);
     }
 
+    public function test_it_reads_active_hotspot_sessions_without_changing_the_router(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->once())
+            ->method('get')
+            ->with('/rest/ip/hotspot/active')
+            ->willReturn([
+                [
+                    '.id' => '*1',
+                    'user' => 'VOUCHER-A',
+                    'address' => '192.168.88.20',
+                    'mac-address' => 'AA:BB:CC:DD:EE:FF',
+                    'uptime' => '01:01:01',
+                    'bytes-in' => '1000',
+                    'bytes-out' => '536',
+                ],
+                ['.id' => '*2', 'uptime' => '00:05:00'],
+            ]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->once())
+            ->method('success')
+            ->with(
+                $router,
+                'GET',
+                '/rest/ip/hotspot/active',
+                $this->isType('int'),
+                200,
+                [],
+                ['count' => 2],
+                'correlation-id',
+            );
+
+        $sessions = (new MikrotikRouterGateway($connections, $recorder))
+            ->activeHotspotSessions($router, 'correlation-id');
+
+        $this->assertSame([[
+            'id' => '*1',
+            'username' => 'VOUCHER-A',
+            'ip_address' => '192.168.88.20',
+            'mac_address' => 'AA:BB:CC:DD:EE:FF',
+            'connected_seconds' => 3661,
+            'rx_bytes' => 1000,
+            'tx_bytes' => 536,
+            'total_bytes' => 1536,
+        ]], $sessions);
+    }
+
     public function test_it_discovers_current_dhcp_nat_and_firewall_configuration(): void
     {
         $router = new Router(['name' => 'Branch Router', 'identity' => 'Branch-HQ']);
@@ -331,20 +383,40 @@ class MikrotikRouterGatewayTest extends TestCase
     {
         $router = new Router(['name' => 'Branch Router']);
         $writes = [];
+        $bridgeCreated = false;
+        $bridgePorts = [];
         $client = $this->createMock(Client::class);
-        $client->expects($this->exactly(2))
+        $client->expects($this->exactly(4))
             ->method('get')
-            ->willReturnCallback(fn (string $endpoint): array => $endpoint === '/rest/interface'
-                ? [
-                    ['name' => 'ether2', 'type' => 'ether'],
-                    ['name' => 'ether3', 'type' => 'ether'],
-                    ['name' => 'ether4', 'type' => 'ether'],
-                ]
-                : []);
+            ->willReturnCallback(function (string $endpoint) use (&$bridgeCreated, &$bridgePorts): array {
+                if ($endpoint === '/rest/interface') {
+                    $interfaces = [
+                        ['name' => 'ether2', 'type' => 'ether'],
+                        ['name' => 'ether3', 'type' => 'ether'],
+                        ['name' => 'ether4', 'type' => 'ether'],
+                    ];
+
+                    return $bridgeCreated
+                        ? array_merge([['name' => 'bridge-lan', 'type' => 'bridge']], $interfaces)
+                        : $interfaces;
+                }
+
+                return $bridgePorts;
+            });
         $client->expects($this->exactly(3))
             ->method('put')
-            ->willReturnCallback(function (string $endpoint, array $payload) use (&$writes): array {
+            ->willReturnCallback(function (string $endpoint, array $payload) use (&$writes, &$bridgeCreated, &$bridgePorts): array {
                 $writes[] = [$endpoint, $payload];
+
+                if ($endpoint === '/rest/interface/bridge') {
+                    $bridgeCreated = true;
+                } else {
+                    $bridgePorts[] = [
+                        '.id' => '*'.(count($bridgePorts) + 1),
+                        'bridge' => $payload['bridge'],
+                        'interface' => $payload['interface'],
+                    ];
+                }
 
                 return [];
             });
@@ -353,7 +425,7 @@ class MikrotikRouterGatewayTest extends TestCase
         $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
 
         $recorder = $this->createMock(RouterApiRecorder::class);
-        $recorder->expects($this->exactly(5))->method('success');
+        $recorder->expects($this->exactly(7))->method('success');
 
         (new MikrotikRouterGateway($connections, $recorder))->configureBridge(
             $router,
@@ -373,22 +445,30 @@ class MikrotikRouterGatewayTest extends TestCase
     {
         $router = new Router(['name' => 'Branch Router']);
         $writes = [];
+        $bridgePorts = [
+            ['.id' => '*1', 'interface' => 'ether2', 'bridge' => 'bridge-lan'],
+        ];
         $client = $this->createMock(Client::class);
-        $client->expects($this->exactly(2))
+        $client->expects($this->exactly(4))
             ->method('get')
-            ->willReturnCallback(fn (string $endpoint): array => $endpoint === '/rest/interface'
-                ? [
-                    ['name' => 'bridge-lan', 'type' => 'bridge'],
-                    ['name' => 'ether2', 'type' => 'ether'],
-                    ['name' => 'ether3', 'type' => 'ether'],
-                ]
-                : [
-                    ['interface' => 'ether2', 'bridge' => 'bridge-lan'],
-                ]);
+            ->willReturnCallback(function (string $endpoint) use (&$bridgePorts): array {
+                return $endpoint === '/rest/interface'
+                    ? [
+                        ['name' => 'bridge-lan', 'type' => 'bridge'],
+                        ['name' => 'ether2', 'type' => 'ether'],
+                        ['name' => 'ether3', 'type' => 'ether'],
+                    ]
+                    : $bridgePorts;
+            });
         $client->expects($this->once())
             ->method('put')
-            ->willReturnCallback(function (string $endpoint, array $payload) use (&$writes): array {
+            ->willReturnCallback(function (string $endpoint, array $payload) use (&$writes, &$bridgePorts): array {
                 $writes[] = [$endpoint, $payload];
+                $bridgePorts[] = [
+                    '.id' => '*'.(count($bridgePorts) + 1),
+                    'bridge' => $payload['bridge'],
+                    'interface' => $payload['interface'],
+                ];
 
                 return [];
             });
@@ -397,7 +477,7 @@ class MikrotikRouterGatewayTest extends TestCase
         $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
 
         $recorder = $this->createMock(RouterApiRecorder::class);
-        $recorder->expects($this->exactly(3))->method('success');
+        $recorder->expects($this->exactly(5))->method('success');
 
         (new MikrotikRouterGateway($connections, $recorder))->configureBridge(
             $router,
@@ -409,6 +489,122 @@ class MikrotikRouterGatewayTest extends TestCase
         $this->assertSame([
             ['/rest/interface/bridge/port', ['bridge' => 'bridge-lan', 'interface' => 'ether3']],
         ], $writes);
+    }
+
+    public function test_it_removes_only_selected_ports_from_the_target_bridge(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $deletes = [];
+        $bridgePorts = [
+            ['.id' => '*1', 'interface' => 'ether2', 'bridge' => 'bridge-lan'],
+            ['.id' => '*2', 'interface' => 'ether3', 'bridge' => 'bridge-lan'],
+        ];
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(4))
+            ->method('get')
+            ->willReturnCallback(function (string $endpoint) use (&$bridgePorts): array {
+                return $endpoint === '/rest/interface'
+                    ? [
+                        ['name' => 'bridge-lan', 'type' => 'bridge'],
+                        ['name' => 'ether2', 'type' => 'ether'],
+                        ['name' => 'ether3', 'type' => 'ether'],
+                    ]
+                    : $bridgePorts;
+            });
+        $client->expects($this->never())->method('put');
+        $client->expects($this->once())
+            ->method('delete')
+            ->willReturnCallback(function (string $endpoint) use (&$deletes, &$bridgePorts): array {
+                $deletes[] = $endpoint;
+                $portId = substr($endpoint, (int) strrpos($endpoint, '/') + 1);
+                $bridgePorts = array_values(array_filter(
+                    $bridgePorts,
+                    fn (array $port): bool => $port['.id'] !== $portId,
+                ));
+
+                return [];
+            });
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(5))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))->configureBridge(
+            $router,
+            'bridge-lan',
+            [],
+            'correlation-id',
+            ['ether2'],
+        );
+
+        $this->assertSame(['/rest/interface/bridge/port/*1'], $deletes);
+    }
+
+    public function test_it_applies_additions_and_removals_in_one_tracked_change(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $writes = [];
+        $deletes = [];
+        $bridgePorts = [
+            ['.id' => '*1', 'interface' => 'ether2', 'bridge' => 'bridge-lan'],
+        ];
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(4))
+            ->method('get')
+            ->willReturnCallback(function (string $endpoint) use (&$bridgePorts): array {
+                return $endpoint === '/rest/interface'
+                    ? [
+                        ['name' => 'bridge-lan', 'type' => 'bridge'],
+                        ['name' => 'ether2', 'type' => 'ether'],
+                        ['name' => 'ether3', 'type' => 'ether'],
+                    ]
+                    : $bridgePorts;
+            });
+        $client->expects($this->once())
+            ->method('put')
+            ->willReturnCallback(function (string $endpoint, array $payload) use (&$writes, &$bridgePorts): array {
+                $writes[] = [$endpoint, $payload];
+                $bridgePorts[] = [
+                    '.id' => '*'.(count($bridgePorts) + 1),
+                    'bridge' => $payload['bridge'],
+                    'interface' => $payload['interface'],
+                ];
+
+                return [];
+            });
+        $client->expects($this->once())
+            ->method('delete')
+            ->willReturnCallback(function (string $endpoint) use (&$deletes, &$bridgePorts): array {
+                $deletes[] = $endpoint;
+                $portId = substr($endpoint, (int) strrpos($endpoint, '/') + 1);
+                $bridgePorts = array_values(array_filter(
+                    $bridgePorts,
+                    fn (array $port): bool => $port['.id'] !== $portId,
+                ));
+
+                return [];
+            });
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(6))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))->configureBridge(
+            $router,
+            'bridge-lan',
+            ['ether3'],
+            'correlation-id',
+            ['ether2'],
+        );
+
+        $this->assertSame([
+            ['/rest/interface/bridge/port', ['bridge' => 'bridge-lan', 'interface' => 'ether3']],
+        ], $writes);
+        $this->assertSame(['/rest/interface/bridge/port/*1'], $deletes);
     }
 
     public function test_it_refuses_to_move_an_ethernet_port_from_a_different_bridge(): void
@@ -424,7 +620,7 @@ class MikrotikRouterGatewayTest extends TestCase
                     ['name' => 'ether2', 'type' => 'ether'],
                 ]
                 : [
-                    ['interface' => 'ether2', 'bridge' => 'bridge-wan'],
+                    ['.id' => '*1', 'interface' => 'ether2', 'bridge' => 'bridge-wan'],
                 ]);
         $client->expects($this->never())->method('put');
 
@@ -444,6 +640,41 @@ class MikrotikRouterGatewayTest extends TestCase
         );
     }
 
+    public function test_it_refuses_to_remove_an_ethernet_port_from_a_different_bridge(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(2))
+            ->method('get')
+            ->willReturnCallback(fn (string $endpoint): array => $endpoint === '/rest/interface'
+                ? [
+                    ['name' => 'bridge-lan', 'type' => 'bridge'],
+                    ['name' => 'bridge-wan', 'type' => 'bridge'],
+                    ['name' => 'ether2', 'type' => 'ether'],
+                ]
+                : [
+                    ['.id' => '*1', 'interface' => 'ether2', 'bridge' => 'bridge-wan'],
+                ]);
+        $client->expects($this->never())->method('put');
+        $client->expects($this->never())->method('delete');
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(2))->method('success');
+
+        $this->expectException(RouterProbeException::class);
+
+        (new MikrotikRouterGateway($connections, $recorder))->configureBridge(
+            $router,
+            'bridge-lan',
+            [],
+            'correlation-id',
+            ['ether2'],
+        );
+    }
+
     public function test_it_lists_router_hotspot_user_profiles_from_the_user_profile_endpoint(): void
     {
         $router = new Router(['name' => 'Branch Router']);
@@ -452,8 +683,8 @@ class MikrotikRouterGatewayTest extends TestCase
             ->method('get')
             ->with('/rest/ip/hotspot/user/profile')
             ->willReturn([
-                ['name' => 'trial', 'rate-limit' => '512k/2048k', 'shared-users' => '2'],
-                ['name' => 'default'],
+                ['.id' => '*2', 'name' => 'trial', 'rate-limit' => '512k/2048k', 'shared-users' => '2'],
+                ['.id' => '*1', 'name' => 'default'],
             ]);
 
         $connections = $this->createMock(RouterConnectionFactory::class);
@@ -466,8 +697,8 @@ class MikrotikRouterGatewayTest extends TestCase
             ->hotspotUserProfiles($router, 'correlation-id');
 
         $this->assertSame([
-            ['name' => 'default', 'rate_limit' => null, 'shared_users' => '1'],
-            ['name' => 'trial', 'rate_limit' => '512k/2048k', 'shared_users' => '2'],
+            ['id' => '*1', 'name' => 'default', 'rate_limit' => null, 'shared_users' => '1'],
+            ['id' => '*2', 'name' => 'trial', 'rate_limit' => '512k/2048k', 'shared_users' => '2'],
         ], $profiles);
     }
 
@@ -620,6 +851,132 @@ class MikrotikRouterGatewayTest extends TestCase
         $gateway = new MikrotikRouterGateway($connections, $recorder);
         $gateway->createHotspotUserProfile($router, 'guest', null, 1, 'correlation-id');
         $gateway->createHotspotUserProfile($router, 'guest', null, 1, 'correlation-id');
+    }
+
+    public function test_it_updates_and_verifies_an_existing_hotspot_user_profile(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(2))
+            ->method('get')
+            ->with('/rest/ip/hotspot/user/profile')
+            ->willReturnOnConsecutiveCalls(
+                [[
+                    '.id' => '*1',
+                    'name' => 'staff-access',
+                    'rate-limit' => '512k/2048k',
+                    'shared-users' => '1',
+                ]],
+                [[
+                    '.id' => '*1',
+                    'name' => 'staff-access',
+                    'rate-limit' => '1024k/4096k',
+                    'shared-users' => '2',
+                ]],
+            );
+        $client->expects($this->once())
+            ->method('patch')
+            ->with('/rest/ip/hotspot/user/profile/*1', [
+                'shared-users' => '2',
+                'rate-limit' => '1024k/4096k',
+            ])
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(3))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))->updateHotspotUserProfile(
+            $router,
+            '*1',
+            'staff-access',
+            '512k/2048k',
+            1,
+            '1024k/4096k',
+            2,
+            'correlation-id',
+        );
+    }
+
+    public function test_it_clears_a_profile_rate_limit_when_updated_to_unlimited(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->exactly(2))
+            ->method('get')
+            ->willReturnOnConsecutiveCalls(
+                [[
+                    '.id' => '*3',
+                    'name' => 'guest-access',
+                    'rate-limit' => '512k/2048k',
+                    'shared-users' => '1',
+                ]],
+                [[
+                    '.id' => '*3',
+                    'name' => 'guest-access',
+                    'shared-users' => '1',
+                ]],
+            );
+        $client->expects($this->once())
+            ->method('patch')
+            ->with('/rest/ip/hotspot/user/profile/*3', [
+                'shared-users' => '1',
+                'rate-limit' => '',
+            ])
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->exactly(3))->method('success');
+
+        (new MikrotikRouterGateway($connections, $recorder))->updateHotspotUserProfile(
+            $router,
+            '*3',
+            'guest-access',
+            '512k/2048k',
+            1,
+            null,
+            1,
+            'correlation-id',
+        );
+    }
+
+    public function test_it_refuses_a_profile_update_when_discovered_values_are_stale(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $client->expects($this->once())
+            ->method('get')
+            ->willReturn([[
+                '.id' => '*1',
+                'name' => 'staff-access',
+                'rate-limit' => '1024k/4096k',
+                'shared-users' => '2',
+            ]]);
+        $client->expects($this->never())->method('patch');
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+
+        $recorder = $this->createMock(RouterApiRecorder::class);
+        $recorder->expects($this->once())->method('success');
+
+        $this->expectException(RouterProbeException::class);
+
+        (new MikrotikRouterGateway($connections, $recorder))->updateHotspotUserProfile(
+            $router,
+            '*1',
+            'staff-access',
+            '512k/2048k',
+            1,
+            '512k/2048k',
+            1,
+            'correlation-id',
+        );
     }
 
     public function test_it_refuses_to_change_an_existing_hotspot_user_profile(): void
@@ -856,6 +1213,234 @@ class MikrotikRouterGatewayTest extends TestCase
                 'disabled' => false,
                 'managed' => false,
             ],
+        ], $servers);
+    }
+
+    public function test_it_exports_reads_and_removes_a_temporary_configuration_file(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+        $readCalls = 0;
+        $fileExistsCalls = 0;
+
+        $client->method('post')
+            ->willReturnCallback(function (string $endpoint, array $payload = []) use (&$readCalls): array {
+                if ($endpoint === '/rest/export') {
+                    $this->assertSame(['file' => 'backup'], $payload);
+
+                    return [];
+                }
+
+                if ($endpoint === '/rest/file/read') {
+                    $readCalls++;
+                    $this->assertSame('backup.rsc', $payload['file']);
+
+                    return $readCalls === 1
+                        ? [['data' => str_repeat('a', 32768)]]
+                        : [['data' => 'tail']];
+                }
+
+                return [];
+            });
+
+        $client->method('get')
+            ->willReturnCallback(function (string $endpoint) use (&$fileExistsCalls): array {
+                $fileExistsCalls++;
+
+                return $fileExistsCalls === 1 ? [['name' => 'backup.rsc']] : [];
+            });
+
+        $client->expects($this->once())
+            ->method('delete')
+            ->with('/rest/file/backup.rsc')
+            ->willReturn([]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->exactly(2))->method('make')->with($router)->willReturn($client);
+        $recorder = $this->createMock(RouterApiRecorder::class);
+
+        $result = (new MikrotikRouterGateway($connections, $recorder))
+            ->exportConfiguration($router, 'backup.rsc', 'correlation-id');
+
+        $this->assertSame(str_repeat('a', 32768).'tail', $result['contents']);
+        $this->assertSame('backup.rsc', $result['file_name']);
+        $this->assertSame('passed', $result['checks']['export']['status']);
+        $this->assertSame('passed', $result['checks']['read_back']['status']);
+        $this->assertSame('passed', $result['checks']['temporary_file_removed']['status']);
+    }
+
+    public function test_it_uploads_a_configuration_file_and_reads_it_back(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $contents = "/ip hotspot print\n";
+        $client = $this->createMock(Client::class);
+
+        $client->expects($this->once())
+            ->method('get')
+            ->with('/rest/file?name=restore.rsc')
+            ->willReturn([]);
+
+        $client->expects($this->once())
+            ->method('put')
+            ->with('/rest/file', ['name' => 'restore.rsc', 'contents' => $contents])
+            ->willReturn([]);
+
+        $client->expects($this->once())
+            ->method('post')
+            ->with('/rest/file/read', [
+                'file' => 'restore.rsc',
+                'chunk-size' => '32768',
+                'offset' => '0',
+            ])
+            ->willReturn([['data' => $contents]]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+        $recorder = $this->createMock(RouterApiRecorder::class);
+
+        (new MikrotikRouterGateway($connections, $recorder))
+            ->uploadConfigurationFile($router, 'restore.rsc', $contents, 'correlation-id');
+    }
+
+    public function test_it_dry_runs_an_uploaded_configuration_file(): void
+    {
+        $router = new Router(['name' => 'Branch Router']);
+        $client = $this->createMock(Client::class);
+
+        $client->expects($this->once())
+            ->method('get')
+            ->with('/rest/file?name=restore.rsc')
+            ->willReturn([['name' => 'restore.rsc']]);
+
+        $client->expects($this->once())
+            ->method('post')
+            ->with('/rest/import', [
+                'file-name' => 'restore.rsc',
+                'verbose' => 'yes',
+                'dry-run' => '',
+            ])
+            ->willReturn([['ret' => 'No syntax errors found in the import file']]);
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->once())->method('make')->with($router)->willReturn($client);
+        $recorder = $this->createMock(RouterApiRecorder::class);
+
+        $result = (new MikrotikRouterGateway($connections, $recorder))
+            ->importConfigurationFile($router, 'restore.rsc', true, 'correlation-id');
+
+        $this->assertSame('passed', $result['checks']['syntax']['status']);
+        $this->assertSame(['No syntax errors found in the import file'], $result['messages']);
+    }
+
+    public function test_managed_reset_removes_managed_objects_but_preserves_management_rules(): void
+    {
+        $router = new Router(['name' => 'Branch Router', 'identity' => 'Branch-HQ']);
+        $client = $this->createMock(Client::class);
+        $servers = [
+            ['.id' => '*1', 'name' => 'Branch-HQ'],
+            ['.id' => '*2', 'name' => 'unrelated'],
+        ];
+        $profiles = [['.id' => '*3', 'name' => 'Branch-HQ']];
+        $addresses = [['.id' => '*4', 'comment' => 'MMUTech managed LAN address']];
+        $pools = [['.id' => '*5', 'comment' => 'MMUTech managed LAN DHCP pool']];
+        $firewall = [
+            ['.id' => '*6', 'comment' => 'MMUTech managed firewall input established'],
+            ['.id' => '*7', 'comment' => 'MMUTech managed firewall input management 1'],
+        ];
+        $ports = [['.id' => '*8', 'bridge' => 'bridge-lan', 'interface' => 'ether2']];
+        $deleted = [];
+
+        $remove = static function (array &$rows, string $id): void {
+            $rows = array_values(array_filter(
+                $rows,
+                static fn (array $row): bool => ($row['.id'] ?? null) !== $id,
+            ));
+        };
+
+        $client->method('get')
+            ->willReturnCallback(function (string $endpoint) use (
+                &$servers,
+                &$profiles,
+                &$addresses,
+                &$pools,
+                &$firewall,
+                &$ports,
+            ): array {
+                return match ($endpoint) {
+                    '/rest/system/identity' => [['name' => 'Branch-HQ']],
+                    '/rest/ip/hotspot' => $servers,
+                    '/rest/ip/hotspot/user/profile' => $profiles,
+                    '/rest/ip/address' => $addresses,
+                    '/rest/ip/pool' => $pools,
+                    '/rest/ip/dhcp-server' => [],
+                    '/rest/ip/dhcp-server/network' => [],
+                    '/rest/ip/firewall/nat' => [],
+                    '/rest/ip/firewall/filter' => $firewall,
+                    '/rest/interface/bridge/port' => $ports,
+                    default => [],
+                };
+            });
+
+        $client->method('post')
+            ->willReturnCallback(fn (string $endpoint, array $payload = []): array => []);
+
+        $client->method('delete')
+            ->willReturnCallback(function (string $endpoint) use (
+                &$deleted,
+                &$servers,
+                &$profiles,
+                &$addresses,
+                &$pools,
+                &$firewall,
+                &$ports,
+                $remove,
+            ): array {
+                $deleted[] = $endpoint;
+                $id = urldecode(substr($endpoint, (int) strrpos($endpoint, '/') + 1));
+
+                match (true) {
+                    str_starts_with($endpoint, '/rest/ip/hotspot/user/profile/') => $remove($profiles, $id),
+                    str_starts_with($endpoint, '/rest/ip/hotspot/') => $remove($servers, $id),
+                    str_starts_with($endpoint, '/rest/ip/address/') => $remove($addresses, $id),
+                    str_starts_with($endpoint, '/rest/ip/pool/') => $remove($pools, $id),
+                    str_starts_with($endpoint, '/rest/ip/firewall/filter/') => $remove($firewall, $id),
+                    str_starts_with($endpoint, '/rest/interface/bridge/port/') => $remove($ports, $id),
+                    default => null,
+                };
+
+                return [];
+            });
+
+        $connections = $this->createMock(RouterConnectionFactory::class);
+        $connections->expects($this->exactly(2))->method('make')->with($router)->willReturn($client);
+        $recorder = $this->createMock(RouterApiRecorder::class);
+
+        $checks = (new MikrotikRouterGateway($connections, $recorder))
+            ->resetManagedConfiguration(
+                $router,
+                'Branch-HQ',
+                'bridge-lan',
+                ['ether2'],
+                [],
+                'correlation-id',
+            );
+
+        $this->assertSame([], array_filter(
+            $checks,
+            static fn (array $check): bool => $check['status'] === 'failed',
+        ));
+        $this->assertContains('/rest/ip/hotspot/%2A1', $deleted);
+        $this->assertContains('/rest/ip/firewall/filter/%2A6', $deleted);
+        $this->assertNotContains('/rest/ip/firewall/filter/%2A7', $deleted);
+        $this->assertNotContains('/rest/ip/address/%2A4', $deleted);
+        $this->assertSame([
+            ['.id' => '*4', 'comment' => 'MMUTech managed LAN address'],
+        ], $addresses);
+        $this->assertSame([
+            ['.id' => '*7', 'comment' => 'MMUTech managed firewall input management 1'],
+        ], $firewall);
+        $this->assertSame([
+            ['.id' => '*2', 'name' => 'unrelated'],
         ], $servers);
     }
 }

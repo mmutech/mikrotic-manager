@@ -8,8 +8,11 @@ use App\Jobs\ConfigureRouterHotspotJob;
 use App\Jobs\ConfigureRouterNetworkJob;
 use App\Jobs\CreateRouterHotspotUserProfileJob;
 use App\Jobs\EnableRouterHotspotCookieLoginJob;
+use App\Jobs\ResetRouterManagedConfigurationJob;
+use App\Jobs\RestoreRouterConfigurationJob;
 use App\Jobs\SyncRouterIdentityJob;
 use App\Jobs\TestRouterConnectionJob;
+use App\Jobs\UpdateRouterHotspotUserProfileJob;
 use App\Jobs\VerifyRouterNetworkJob;
 use App\Models\Router;
 use App\Models\RouterJob;
@@ -19,17 +22,24 @@ use App\Services\Mikrotik\MikrotikRouterConfigurator;
 use App\Services\RouterJobService;
 use App\Services\RouterRegistryService;
 use App\Support\CorrelationContext;
+use App\Support\HotspotRateLimit;
 use App\Support\HotspotServerConfiguration;
 use App\Support\RouterIdentity;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\In;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use Livewire\WithFileUploads;
 
 new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 {
+    use WithFileUploads;
+
     public Router $router;
 
     public string $selectedUserId = '';
@@ -48,6 +58,9 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     /** @var array<int, string> */
     public array $selectedLanInterfaces = [];
 
+    /** @var array<int, string> */
+    public array $selectedLanInterfacesToRemove = [];
+
     public bool $lanInterfacesDiscovered = false;
 
     public bool $managementImpactConfirmed = false;
@@ -56,17 +69,19 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public string $networkBridgeName = '';
 
-    public string $lanAddress = '';
+    public string $lanAddress = '192.168.88.1/23';
 
-    public string $poolStart = '';
+    public string $poolStart = '192.168.88.2';
 
-    public string $poolEnd = '';
+    public string $poolEnd = '192.168.89.254';
 
-    public string $dnsServers = '';
+    public string $dnsServers = '1.1.1.1,8.8.8.8';
 
-    public string $managementCidrs = '';
+    public string $managementCidrs = '192.168.2.70';
 
     public string $managementCidrDetectionNote = '';
+
+    public bool $networkFormVisible = false;
 
     public bool $networkImpactConfirmed = false;
 
@@ -119,6 +134,13 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     #[Locked]
     public int $confirmationMemberId = 0;
 
+    public string $resetConfirmation = '';
+
+    public string $restoreConfirmation = '';
+
+    /** @var TemporaryUploadedFile|null */
+    public $restoreFile = null;
+
     public string $hotspotProfileName = '';
 
     public string $hotspotProfileUploadSpeedKbps = '';
@@ -127,7 +149,17 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public string $hotspotProfileSharedUsers = '1';
 
-    /** @var array<int, array{name: string, rate_limit: ?string, shared_users: string}> */
+    public bool $hotspotProfileFormVisible = false;
+
+    public ?string $editingHotspotProfileId = null;
+
+    public ?string $editingHotspotProfileName = null;
+
+    public ?string $hotspotProfileExpectedRateLimit = null;
+
+    public string $hotspotProfileExpectedSharedUsers = '1';
+
+    /** @var array<int, array{id: ?string, name: string, rate_limit: ?string, shared_users: string}> */
     public array $hotspotUserProfiles = [];
 
     public bool $hotspotUserProfilesDiscovered = false;
@@ -141,6 +173,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
 
     public function updatedBridgeName(): void
     {
+        $this->selectedLanInterfaces = [];
+        $this->selectedLanInterfacesToRemove = [];
         $this->managementImpactConfirmed = false;
         $this->networkImpactConfirmed = false;
     }
@@ -148,6 +182,17 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     public function updatedSelectedLanInterfaces(): void
     {
         $this->managementImpactConfirmed = false;
+    }
+
+    public function updatedSelectedLanInterfacesToRemove(): void
+    {
+        $this->managementImpactConfirmed = false;
+    }
+
+    public function updatedRestoreFile(): void
+    {
+        $this->resetErrorBag('restoreFile');
+        $this->restoreConfirmation = '';
     }
 
     public function updated(string $property): void
@@ -324,6 +369,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             $this->lanInterfaces = $gateway->ethernetInterfaces($this->router, $correlation->id());
             $this->lanInterfacesDiscovered = true;
             $this->selectedLanInterfaces = [];
+            $this->selectedLanInterfacesToRemove = [];
             $this->wanInterface = '';
             $bridgeNames = collect($this->lanInterfaces)->pluck('bridge')->filter()->unique()->values();
             $this->networkBridgeName = $bridgeNames->count() === 1 ? $bridgeNames->first() : '';
@@ -387,6 +433,13 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->managementCidrDetectionNote = "Last auto-detect resolved this server's source network to ".count($cidrs).' CIDR(s). Review before applying.';
     }
 
+    public function toggleNetworkForm(): void
+    {
+        $this->authorize('update', $this->router);
+
+        $this->networkFormVisible = ! $this->networkFormVisible;
+    }
+
     public function applyBridgeConfiguration(
         RouterGateway $gateway,
         RouterJobService $jobs,
@@ -396,6 +449,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         $this->authorize('update', $this->router);
         $this->resetErrorBag('bridgeConfiguration');
         $this->resetErrorBag('lanInterfaces');
+        $this->resetErrorBag('selectedLanInterfaces');
+        $this->resetErrorBag('selectedLanInterfacesToRemove');
 
         $this->validate([
             'bridgeName' => ['required', 'string', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._-]{0,31}\z/'],
@@ -428,22 +483,49 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             return;
         }
 
-        $eligibleInterfaces = collect($this->lanInterfaces)
-            ->filter(fn (array $interface): bool => $interface['bridge'] === null || $interface['bridge'] === $this->bridgeName)
+        $addEligibleInterfaces = collect($this->lanInterfaces)
+            ->filter(fn (array $interface): bool => $interface['bridge'] === null)
+            ->pluck('name')
+            ->all();
+        $removeEligibleInterfaces = collect($this->lanInterfaces)
+            ->filter(fn (array $interface): bool => $interface['bridge'] === $this->bridgeName)
             ->pluck('name')
             ->all();
 
         $validated = $this->validate([
-            'selectedLanInterfaces' => ['required', 'array', 'min:1'],
-            'selectedLanInterfaces.*' => ['required', 'string', 'distinct', Rule::in($eligibleInterfaces)],
+            'selectedLanInterfaces' => ['array'],
+            'selectedLanInterfaces.*' => ['required', 'string', 'distinct', Rule::in($addEligibleInterfaces)],
+            'selectedLanInterfacesToRemove' => ['array'],
+            'selectedLanInterfacesToRemove.*' => ['required', 'string', 'distinct', Rule::in($removeEligibleInterfaces)],
         ], [
-            'selectedLanInterfaces.required' => 'Select at least one Ethernet interface to add.',
-            'selectedLanInterfaces.min' => 'Select at least one Ethernet interface to add.',
-            'selectedLanInterfaces.*.in' => 'A selected interface is no longer available for this bridge.',
+            'selectedLanInterfaces.*.in' => 'A selected interface is no longer available to add to this bridge.',
+            'selectedLanInterfacesToRemove.*.in' => 'A selected interface is no longer a member of this bridge.',
         ]);
 
         $interfaces = array_values($validated['selectedLanInterfaces']);
-        $idempotencyHash = substr(hash('sha256', $this->bridgeName."\0".implode("\0", $interfaces)), 0, 32);
+        $interfacesToRemove = array_values($validated['selectedLanInterfacesToRemove']);
+
+        if ($interfaces === [] && $interfacesToRemove === []) {
+            $this->addError('bridgeConfiguration', 'Select at least one interface to add or remove.');
+
+            return;
+        }
+
+        if (array_intersect($interfaces, $interfacesToRemove) !== []) {
+            $this->addError('bridgeConfiguration', 'An interface cannot be added and removed in the same operation.');
+
+            return;
+        }
+
+        $idempotencyHash = substr(
+            hash('sha256', json_encode([
+                $this->bridgeName,
+                $interfaces,
+                $interfacesToRemove,
+            ], JSON_THROW_ON_ERROR)),
+            0,
+            32,
+        );
         $job = $jobs->create(
             router: $this->router,
             type: 'configure_bridge',
@@ -451,6 +533,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
             payload: [
                 'bridge_name' => $this->bridgeName,
                 'interfaces' => $interfaces,
+                'remove_interfaces' => $interfacesToRemove,
                 'management_impact_confirmed' => $this->managementImpactConfirmed,
             ],
             idempotencyKey: 'router-bridge:'.$this->router->getKey().':'.$idempotencyHash,
@@ -463,6 +546,7 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
                 'job_uuid' => $job->uuid,
                 'bridge_name' => $this->bridgeName,
                 'interfaces' => $interfaces,
+                'remove_interfaces' => $interfacesToRemove,
             ],
             actor: auth()->user(),
         );
@@ -474,8 +558,8 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         )->afterCommit();
 
         $this->dispatchAlert(
-            'Bridge configuration queued',
-            'Bridge configuration has been queued. Check Router jobs for the result.',
+            'Bridge changes queued',
+            'The selected bridge port additions and removals have been queued. Check Router jobs for the result.',
         );
     }
 
@@ -863,6 +947,97 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         }
     }
 
+    public function toggleHotspotProfileForm(): void
+    {
+        $this->authorize('update', $this->router);
+
+        $this->hotspotProfileFormVisible = ! $this->hotspotProfileFormVisible;
+    }
+
+    public function editRouterHotspotUserProfile(string $profileId): void
+    {
+        $this->authorize('update', $this->router);
+
+        $profile = collect($this->hotspotUserProfiles)
+            ->firstWhere('id', $profileId);
+
+        if (! is_array($profile)) {
+            $this->dispatchAlert(
+                'Profile unavailable',
+                'Refresh the router profile list before editing this profile.',
+                'error',
+            );
+
+            return;
+        }
+
+        try {
+            HotspotRateLimit::canonical($profile['rate_limit'] ?? null);
+            $speeds = HotspotRateLimit::speedsKbps($profile['rate_limit'] ?? null);
+        } catch (InvalidArgumentException $exception) {
+            $this->dispatchAlert('Unsupported rate limit', $exception->getMessage(), 'error');
+
+            return;
+        }
+
+        $this->editingHotspotProfileId = $profileId;
+        $this->editingHotspotProfileName = (string) $profile['name'];
+        $this->hotspotProfileName = (string) $profile['name'];
+        $this->hotspotProfileUploadSpeedKbps = $speeds === null ? '' : (string) $speeds['upload'];
+        $this->hotspotProfileDownloadSpeedKbps = $speeds === null ? '' : (string) $speeds['download'];
+        $this->hotspotProfileSharedUsers = (string) ($profile['shared_users'] ?? '1');
+        $this->hotspotProfileExpectedRateLimit = $profile['rate_limit'] ?? null;
+        $this->hotspotProfileExpectedSharedUsers = (string) ($profile['shared_users'] ?? '1');
+        $this->hotspotProfileFormVisible = true;
+
+        foreach ([
+            'hotspotProfileName',
+            'hotspotProfileUploadSpeedKbps',
+            'hotspotProfileDownloadSpeedKbps',
+            'hotspotProfileSharedUsers',
+        ] as $field) {
+            $this->resetErrorBag($field);
+        }
+    }
+
+    public function resetHotspotProfileForm(): void
+    {
+        $this->authorize('update', $this->router);
+
+        $this->editingHotspotProfileId = null;
+        $this->editingHotspotProfileName = null;
+        $this->hotspotProfileExpectedRateLimit = null;
+        $this->hotspotProfileExpectedSharedUsers = '1';
+        $this->hotspotProfileName = '';
+        $this->hotspotProfileUploadSpeedKbps = '';
+        $this->hotspotProfileDownloadSpeedKbps = '';
+        $this->hotspotProfileSharedUsers = '1';
+
+        foreach ([
+            'hotspotProfileName',
+            'hotspotProfileUploadSpeedKbps',
+            'hotspotProfileDownloadSpeedKbps',
+            'hotspotProfileSharedUsers',
+        ] as $field) {
+            $this->resetErrorBag($field);
+        }
+    }
+
+    public function saveRouterHotspotUserProfile(
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+
+        if ($this->editingHotspotProfileId !== null) {
+            $this->updateRouterHotspotUserProfile($jobs, $audit);
+
+            return;
+        }
+
+        $this->createRouterHotspotUserProfile($jobs, $audit);
+    }
+
     public function openArchiveConfirmation(): void
     {
         $this->authorize('delete', $this->router);
@@ -887,6 +1062,334 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     {
         $this->confirmationDialog = '';
         $this->confirmationMemberId = 0;
+        $this->resetConfirmation = '';
+        $this->restoreConfirmation = '';
+        $this->resetErrorBag(['resetConfirmation', 'restoreConfirmation']);
+    }
+
+    public function openResetConfirmation(): void
+    {
+        $this->authorize('update', $this->router);
+
+        if ($this->routerHasPendingJob()) {
+            $this->dispatchAlert(
+                'Operation already queued',
+                'Wait for the current router job to finish before resetting managed configuration.',
+                'error',
+            );
+
+            return;
+        }
+
+        $this->resetConfirmation = '';
+        $this->resetErrorBag('resetConfirmation');
+        $this->confirmationDialog = 'reset';
+    }
+
+    public function openRestoreConfirmation(): void
+    {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('restoreFile');
+
+        if (! is_object($this->restoreFile) || ! method_exists($this->restoreFile, 'getPathname')) {
+            $this->addError('restoreFile', 'Choose a RouterOS .rsc export to restore.');
+
+            return;
+        }
+
+        if (strtolower((string) $this->restoreFile->getClientOriginalExtension()) !== 'rsc') {
+            $this->addError('restoreFile', 'Only RouterOS .rsc export files can be restored.');
+
+            return;
+        }
+
+        $size = (int) $this->restoreFile->getSize();
+
+        if ($size < 1 || $size > 61439) {
+            $this->addError('restoreFile', 'The .rsc file must be between 1 and 61439 bytes.');
+
+            return;
+        }
+
+        if ($this->routerHasPendingJob()) {
+            $this->dispatchAlert(
+                'Operation already queued',
+                'Wait for the current router job to finish before restoring a configuration.',
+                'error',
+            );
+
+            return;
+        }
+
+        $this->restoreConfirmation = '';
+        $this->resetErrorBag('restoreConfirmation');
+        $this->confirmationDialog = 'restore';
+    }
+
+    public function downloadBackup(
+        RouterGateway $gateway,
+        RouterJobService $jobs,
+        AuditLogger $audit,
+        CorrelationContext $correlation,
+    ) {
+        $this->authorize('update', $this->router);
+
+        if ($this->routerHasPendingJob()) {
+            $this->dispatchAlert(
+                'Operation already queued',
+                'Wait for the current router job to finish before exporting a backup.',
+                'error',
+            );
+
+            return null;
+        }
+
+        $fileName = 'mmutech-backup-'.$this->router->getKey().'-'.now()->format('YmdHis')
+            .'-'.Str::lower(Str::random(6)).'.rsc';
+        $correlationId = $correlation->id();
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'create_backup',
+            actor: auth()->user(),
+            payload: ['file_name' => $fileName],
+        );
+        $jobs->markRunning($job);
+
+        try {
+            $result = $gateway->exportConfiguration($this->router, $fileName, $correlationId);
+            $payload = $job->payload ?? [];
+            $payload['verification'] = $result['checks'];
+            $payload['verification_at'] = now()->toIso8601String();
+            $payload['size'] = strlen($result['contents']);
+            $payload['sha256'] = hash('sha256', $result['contents']);
+            $job->forceFill(['payload' => $payload])->save();
+            $jobs->markSucceeded($job);
+
+            $audit->record(
+                'router.backup_downloaded',
+                $this->router,
+                metadata: [
+                    'job_uuid' => $job->uuid,
+                    'file_name' => $fileName,
+                    'size' => strlen($result['contents']),
+                ],
+                actor: auth()->user(),
+                correlationId: $correlationId,
+            );
+        } catch (Throwable $exception) {
+            $category = $exception instanceof RouterProbeException
+                ? $exception->category->value
+                : null;
+            $jobs->markFailed($job, $exception, $category);
+            $audit->record(
+                'router.backup_failed',
+                $this->router,
+                metadata: ['job_uuid' => $job->uuid, 'file_name' => $fileName],
+                actor: auth()->user(),
+                correlationId: $correlationId,
+            );
+            $this->dispatchAlert('Backup failed', $exception->getMessage(), 'error');
+
+            return null;
+        }
+
+        return response()->streamDownload(
+            function () use ($result): void {
+                echo $result['contents'];
+            },
+            $fileName,
+            ['Content-Type' => 'text/plain; charset=UTF-8'],
+        );
+    }
+
+    public function resetManagedConfiguration(
+        RouterGateway $gateway,
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag('resetConfirmation');
+
+        try {
+            $identity = RouterIdentity::fromRouter($this->router);
+        } catch (RouterProbeException $exception) {
+            $this->addError('resetConfirmation', $exception->getMessage());
+
+            return;
+        }
+
+        if ($this->resetConfirmation !== $identity) {
+            $this->addError('resetConfirmation', 'Type '.$identity.' exactly to confirm the reset.');
+
+            return;
+        }
+
+        if ($this->routerHasPendingJob()) {
+            $this->dispatchAlert(
+                'Operation already queued',
+                'Wait for the current router job to finish before resetting managed configuration.',
+                'error',
+            );
+
+            return;
+        }
+
+        $scope = $this->managedResetScope();
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'reset_managed_configuration',
+            actor: auth()->user(),
+            payload: [
+                'identity' => $identity,
+                'bridge_name' => $scope['bridge_name'],
+                'interfaces' => $scope['interfaces'],
+                'profile_names' => $scope['profile_names'],
+                'scope' => 'mmutech-managed-only',
+            ],
+        );
+
+        $audit->record(
+            'router.managed_reset_queued',
+            $this->router,
+            metadata: [
+                'job_uuid' => $job->uuid,
+                'identity' => $identity,
+                'bridge_name' => $scope['bridge_name'],
+                'interfaces' => $scope['interfaces'],
+            ],
+            actor: auth()->user(),
+        );
+
+        ResetRouterManagedConfigurationJob::dispatch(
+            routerId: $this->router->getKey(),
+            routerJobId: $job->getKey(),
+            identity: $identity,
+            bridgeName: $scope['bridge_name'],
+            managedInterfaces: $scope['interfaces'],
+            managedProfileNames: $scope['profile_names'],
+            correlationId: $job->correlation_id,
+        )->afterCommit();
+
+        $this->closeConfirmationDialog();
+        $this->dispatchAlert(
+            'Managed reset queued',
+            'MMUTech-managed router configuration will be removed and read back for verification.',
+        );
+    }
+
+    public function restoreConfiguration(
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+        $this->resetErrorBag(['restoreFile', 'restoreConfirmation']);
+
+        if (! is_object($this->restoreFile) || ! method_exists($this->restoreFile, 'getPathname')) {
+            $this->addError('restoreFile', 'Choose a RouterOS .rsc export to restore.');
+
+            return;
+        }
+
+        if (strtolower((string) $this->restoreFile->getClientOriginalExtension()) !== 'rsc') {
+            $this->addError('restoreFile', 'Only RouterOS .rsc export files can be restored.');
+
+            return;
+        }
+
+        try {
+            $identity = RouterIdentity::fromRouter($this->router);
+        } catch (RouterProbeException $exception) {
+            $this->addError('restoreConfirmation', $exception->getMessage());
+
+            return;
+        }
+
+        if ($this->restoreConfirmation !== $identity) {
+            $this->addError('restoreConfirmation', 'Type '.$identity.' exactly to confirm the restore.');
+
+            return;
+        }
+
+        if ($this->routerHasPendingJob()) {
+            $this->dispatchAlert(
+                'Operation already queued',
+                'Wait for the current router job to finish before restoring a configuration.',
+                'error',
+            );
+
+            return;
+        }
+
+        $contents = file_get_contents($this->restoreFile->getRealPath());
+
+        if (! is_string($contents) || $contents === '') {
+            $this->addError('restoreFile', 'The selected .rsc file is empty or could not be read.');
+
+            return;
+        }
+
+        if (strlen($contents) > 61439) {
+            $this->addError('restoreFile', 'RouterOS accepts .rsc files up to 61439 bytes.');
+
+            return;
+        }
+
+        $fileName = 'mmutech-restore-'.$this->router->getKey().'-'.now()->format('YmdHis')
+            .'-'.Str::lower(Str::random(6)).'.rsc';
+        $path = 'router-imports/'.$fileName;
+
+        if (! Storage::disk('local')->put($path, $contents)) {
+            $this->addError('restoreFile', 'The uploaded script could not be staged for import. Try again.');
+
+            return;
+        }
+
+        $originalName = (string) $this->restoreFile->getClientOriginalName();
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'restore_configuration',
+            actor: auth()->user(),
+            payload: [
+                'file_name' => $fileName,
+                'original_name' => $originalName,
+                'size' => strlen($contents),
+                'sha256' => hash('sha256', $contents),
+            ],
+        );
+
+        $audit->record(
+            'router.restore_queued',
+            $this->router,
+            metadata: [
+                'job_uuid' => $job->uuid,
+                'file_name' => $fileName,
+                'original_name' => $originalName,
+                'size' => strlen($contents),
+            ],
+            actor: auth()->user(),
+        );
+
+        try {
+            RestoreRouterConfigurationJob::dispatch(
+                routerId: $this->router->getKey(),
+                routerJobId: $job->getKey(),
+                fileName: $fileName,
+                correlationId: $job->correlation_id,
+            )->afterCommit();
+        } catch (Throwable $exception) {
+            Storage::disk('local')->delete($path);
+            $jobs->markFailed($job, $exception);
+            $this->dispatchAlert('Restore failed to queue', $exception->getMessage(), 'error');
+
+            return;
+        }
+
+        $this->restoreFile = null;
+        $this->closeConfirmationDialog();
+        $this->dispatchAlert(
+            'Restore queued',
+            'RouterOS will dry-run the .rsc file, import it, and verify the result.',
+        );
     }
 
     public function enableHotspotCookieLogin(
@@ -1014,6 +1517,101 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
         )->afterCommit();
 
         $this->dispatchAlert('HotSpot profile queued', 'Router-level Hotspot user profile creation has been queued.');
+    }
+
+    public function updateRouterHotspotUserProfile(
+        RouterJobService $jobs,
+        AuditLogger $audit,
+    ): void {
+        $this->authorize('update', $this->router);
+
+        $profileId = $this->editingHotspotProfileId;
+        $profileName = $this->editingHotspotProfileName;
+
+        if ($profileId === null || $profileName === null) {
+            $this->dispatchAlert(
+                'Profile unavailable',
+                'Refresh the router profile list before modifying this profile.',
+                'error',
+            );
+
+            return;
+        }
+
+        $validated = $this->validate([
+            'hotspotProfileName' => ['required', 'string', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/'],
+            'hotspotProfileUploadSpeedKbps' => ['nullable', 'integer', 'min:1', 'required_with:hotspotProfileDownloadSpeedKbps'],
+            'hotspotProfileDownloadSpeedKbps' => ['nullable', 'integer', 'min:1', 'required_with:hotspotProfileUploadSpeedKbps'],
+            'hotspotProfileSharedUsers' => ['required', 'integer', 'min:1'],
+        ], [
+            'hotspotProfileName.regex' => 'Use 1 to 64 letters, numbers, dots, underscores, or hyphens; the name must start with a letter or number.',
+            'hotspotProfileUploadSpeedKbps.required_with' => 'Enter both upload and download speeds, or leave both blank for no rate limit.',
+            'hotspotProfileDownloadSpeedKbps.required_with' => 'Enter both upload and download speeds, or leave both blank for no rate limit.',
+        ]);
+
+        if ($validated['hotspotProfileName'] !== $profileName) {
+            $this->addError('hotspotProfileName', 'An existing profile cannot be renamed.');
+
+            return;
+        }
+
+        if ($this->router->jobs()->whereIn('status', [
+            RouterJobStatus::Queued->value,
+            RouterJobStatus::Running->value,
+            RouterJobStatus::Retrying->value,
+        ])->exists()) {
+            $this->dispatchAlert(
+                'Router operation in progress',
+                'Wait for the current router operation to finish before modifying a Hotspot profile.',
+                'error',
+            );
+
+            return;
+        }
+
+        $uploadSpeedKbps = $validated['hotspotProfileUploadSpeedKbps'] ?? null;
+        $downloadSpeedKbps = $validated['hotspotProfileDownloadSpeedKbps'] ?? null;
+        $rateLimit = $uploadSpeedKbps === null || $uploadSpeedKbps === ''
+            ? null
+            : (int) $uploadSpeedKbps.'k/'.(int) $downloadSpeedKbps.'k';
+        $configuration = [
+            'profile_id' => $profileId,
+            'profile_name' => $profileName,
+            'expected_rate_limit' => $this->hotspotProfileExpectedRateLimit,
+            'expected_shared_users' => (int) $this->hotspotProfileExpectedSharedUsers,
+            'rate_limit' => $rateLimit,
+            'shared_users' => (int) $validated['hotspotProfileSharedUsers'],
+        ];
+        $configurationHash = substr(hash('sha256', json_encode($configuration, JSON_THROW_ON_ERROR)), 0, 32);
+
+        $job = $jobs->create(
+            router: $this->router,
+            type: 'update_hotspot_user_profile',
+            actor: auth()->user(),
+            payload: $configuration,
+            idempotencyKey: 'router-hotspot-user-profile-update:'.$this->router->getKey().':'.$profileId.':'.$configurationHash,
+        );
+
+        $audit->record(
+            'router.hotspot_user_profile_update_queued',
+            $this->router,
+            metadata: [
+                'job_uuid' => $job->uuid,
+                'profile_id' => $profileId,
+                'profile_name' => $profileName,
+                'rate_limit' => $rateLimit,
+                'shared_users' => $configuration['shared_users'],
+            ],
+            actor: auth()->user(),
+        );
+
+        UpdateRouterHotspotUserProfileJob::dispatch(
+            routerId: $this->router->getKey(),
+            routerJobId: $job->getKey(),
+            correlationId: $job->correlation_id,
+        )->afterCommit();
+
+        $this->dispatchAlert('HotSpot profile update queued', 'The Hotspot user profile modification has been queued for RouterOS verification.');
     }
 
     /**
@@ -1288,6 +1886,94 @@ new #[Layout('layouts::app')] #[Title('Router')] class extends Component
     private function jobFailureAlertSessionKey(string $key, RouterJob $job): string
     {
         return 'router-job-failure-alert:'.$this->router->getKey().':'.$key.':'.$job->getKey();
+    }
+
+    private function routerHasPendingJob(): bool
+    {
+        return $this->router->jobs()
+            ->whereIn('status', [
+                RouterJobStatus::Queued->value,
+                RouterJobStatus::Running->value,
+                RouterJobStatus::Retrying->value,
+            ])
+            ->exists();
+    }
+
+    /**
+     * Derive the MMUTech-managed reset scope from tracked router jobs.
+     *
+     * @return array{bridge_name: string, interfaces: array<int, string>, profile_names: array<int, string>}
+     */
+    private function managedResetScope(): array
+    {
+        $jobs = $this->router->jobs()
+            ->whereIn('type', [
+                'configure_bridge',
+                'configure_network',
+                'create_hotspot_user_profile',
+                'update_hotspot_user_profile',
+            ])
+            ->orderBy('created_at')
+            ->get();
+
+        $bridgeName = '';
+        $interfaces = [];
+        $profileNames = [];
+
+        foreach ($jobs as $job) {
+            $payload = $job->payload ?? [];
+
+            if ($job->type === 'configure_bridge') {
+                $jobBridgeName = is_string($payload['bridge_name'] ?? null) ? $payload['bridge_name'] : '';
+
+                if ($jobBridgeName !== '') {
+                    $bridgeName = $jobBridgeName;
+                }
+
+                foreach ($payload['interfaces'] ?? [] as $interface) {
+                    if (is_string($interface) && $interface !== '') {
+                        $interfaces[$interface] = true;
+                    }
+                }
+
+                foreach ($payload['remove_interfaces'] ?? [] as $interface) {
+                    if (is_string($interface)) {
+                        unset($interfaces[$interface]);
+                    }
+                }
+
+                continue;
+            }
+
+            if ($job->type === 'configure_network') {
+                $configuration = $payload['configuration'] ?? [];
+                $jobBridgeName = is_string($configuration['bridge_name'] ?? null)
+                    ? $configuration['bridge_name']
+                    : '';
+
+                if ($jobBridgeName !== '') {
+                    $bridgeName = $jobBridgeName;
+                }
+
+                continue;
+            }
+
+            $profileName = is_string($payload['profile_name'] ?? null)
+                ? $payload['profile_name']
+                : (is_string($payload['configuration']['profile_name'] ?? null)
+                    ? $payload['configuration']['profile_name']
+                    : '');
+
+            if ($profileName !== '') {
+                $profileNames[$profileName] = true;
+            }
+        }
+
+        return [
+            'bridge_name' => $bridgeName !== '' ? $bridgeName : 'bridge-lan',
+            'interfaces' => array_keys($interfaces),
+            'profile_names' => array_keys($profileNames),
+        ];
     }
 
     private function dispatchAlert(string $title, string $message, string $type = 'success'): void

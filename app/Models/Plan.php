@@ -132,13 +132,32 @@ class Plan extends Model
         return $seconds.' second(s)';
     }
 
+    /** @return array<int, string> */
+    public static function connectedTimeOptions(): array
+    {
+        return [
+            1800 => '30 minutes',
+            3600 => '1 hour',
+            7200 => '2 hours',
+            14400 => '4 hours',
+            28800 => '8 hours',
+            86400 => '24 hours',
+            0 => 'No maximum time limit',
+        ];
+    }
+
     public function connectedTimeLabel(): ?string
     {
-        if (! $this->time_allowance_seconds) {
+        if ($this->time_allowance_seconds === null || (int) $this->time_allowance_seconds <= 0) {
             return null;
         }
 
         $seconds = (int) $this->time_allowance_seconds;
+        $options = self::connectedTimeOptions();
+
+        if (isset($options[$seconds])) {
+            return $options[$seconds];
+        }
 
         if ($seconds % 3600 === 0) {
             return ($seconds / 3600).' hour(s)';

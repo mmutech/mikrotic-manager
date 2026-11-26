@@ -59,9 +59,11 @@ interface RouterGateway
     public function managementSourceCidrs(Router $router, string $correlationId): array;
 
     /**
-     * Create a bridge if needed and add the selected Ethernet interfaces.
+     * Create a bridge if needed, add selected Ethernet interfaces, and remove
+     * selected interfaces from that bridge. Changes are verified by read-back.
      *
      * @param  array<int, string>  $interfaces
+     * @param  array<int, string>  $interfacesToRemove
      *
      * @throws RouterProbeException
      */
@@ -70,6 +72,7 @@ interface RouterGateway
         string $bridgeName,
         array $interfaces,
         string $correlationId,
+        array $interfacesToRemove = [],
     ): void;
 
     /**
@@ -128,11 +131,20 @@ interface RouterGateway
     /**
      * Read router-level Hotspot user profiles.
      *
-     * @return array<int, array{name: string, rate_limit: ?string, shared_users: string}>
+     * @return array<int, array{id: ?string, name: string, rate_limit: ?string, shared_users: string}>
      *
      * @throws RouterProbeException
      */
     public function hotspotUserProfiles(Router $router, string $correlationId): array;
+
+    /**
+     * Read active HotSpot sessions. Read-only; never changes router state.
+     *
+     * @return array<int, array{id: ?string, username: string, ip_address: ?string, mac_address: ?string, connected_seconds: ?int, rx_bytes: ?int, tx_bytes: ?int, total_bytes: int}>
+     *
+     * @throws RouterProbeException
+     */
+    public function activeHotspotSessions(Router $router, string $correlationId): array;
 
     /**
      * Create a router-level Hotspot user profile without modifying existing profiles.
@@ -146,4 +158,85 @@ interface RouterGateway
         int $sharedUsers,
         string $correlationId,
     ): void;
+
+    /**
+     * Update an existing router-level Hotspot user profile after checking that
+     * its discovered settings are still current, then verify the RouterOS
+     * read-back. Only rate-limit and shared-users are changed.
+     *
+     * @throws RouterProbeException
+     */
+    public function updateHotspotUserProfile(
+        Router $router,
+        string $profileId,
+        string $profileName,
+        ?string $expectedRateLimit,
+        int $expectedSharedUsers,
+        ?string $rateLimit,
+        int $sharedUsers,
+        string $correlationId,
+    ): void;
+
+    /**
+     * Export RouterOS configuration to a temporary .rsc file, read it back in
+     * chunks, and remove the temporary router file.
+     *
+     * @return array{contents: string, checks: array<string, array{status: string, message: string}>, file_name: string}
+     *
+     * @throws RouterProbeException
+     */
+    public function exportConfiguration(Router $router, string $fileName, string $correlationId): array;
+
+    /**
+     * Upload a .rsc file to the router and read it back for verification.
+     *
+     * @throws RouterProbeException
+     */
+    public function uploadConfigurationFile(
+        Router $router,
+        string $fileName,
+        string $contents,
+        string $correlationId,
+    ): void;
+
+    /**
+     * Run an uploaded .rsc file through RouterOS import. Dry runs validate
+     * syntax without changing configuration.
+     *
+     * @return array{messages: array<int, string>, checks: array<string, array{status: string, message: string}>}
+     *
+     * @throws RouterProbeException
+     */
+    public function importConfigurationFile(
+        Router $router,
+        string $fileName,
+        bool $dryRun,
+        string $correlationId,
+    ): array;
+
+    /**
+     * Remove an uploaded configuration file from the router.
+     *
+     * @throws RouterProbeException
+     */
+    public function deleteConfigurationFile(Router $router, string $fileName, string $correlationId): void;
+
+    /**
+     * Remove MMUTech-managed configuration while preserving management access
+     * and voucher accounts, then verify the resulting RouterOS state.
+     *
+     * @param  array<int, string>  $managedInterfaces
+     * @param  array<int, string>  $managedProfileNames
+     * @return array<string, array{status: string, message: string}>
+     *
+     * @throws RouterProbeException
+     */
+    public function resetManagedConfiguration(
+        Router $router,
+        string $expectedIdentity,
+        string $bridgeName,
+        array $managedInterfaces,
+        array $managedProfileNames,
+        string $correlationId,
+    ): array;
 }

@@ -45,7 +45,7 @@ class MikrotikRouterConfiguratorTest extends TestCase
             $commands,
         );
         $this->assertContains(
-            '/ip firewall nat add chain=srcnat action=masquerade src-address=192.168.10.0/24 out-interface=ether1 disabled=no comment="MMUTech managed LAN masquerade"',
+            '/ip firewall nat add chain=srcnat action=masquerade src-address=192.168.10.0/24 out-interface=ether1 disabled=no comment="MMUTech managed LAN masquerade" place-before=0',
             $commands,
         );
         $this->assertCount(9, $firewallCommands);
@@ -253,6 +253,132 @@ class MikrotikRouterConfiguratorTest extends TestCase
         $this->assertSame('passed', $checks['firewall_conflicts']['status']);
     }
 
+    public function test_it_reorders_managed_firewall_rules_and_moves_the_masquerade_rule_first(): void
+    {
+        $configuration = $this->validConfiguration();
+        $configuration['management_cidrs'] = ['192.168.2.70/32'];
+        $rules = $this->expectedFirewallRuleDefinitions('192.168.2.70/32');
+        $filterRows = [];
+
+        foreach (array_reverse($rules) as $index => $rule) {
+            $filterRows[] = array_merge(
+                ['.id' => '*'.(30 + $index)],
+                $rule['settings'],
+                ['comment' => $rule['comment']],
+            );
+        }
+
+        foreach ($filterRows as &$row) {
+            if (($row['comment'] ?? null) === 'MMUTech managed firewall input management 1') {
+                $row['src-address'] = '192.168.2.70';
+            }
+        }
+        unset($row);
+
+        $state = [
+            '/rest/interface' => [
+                ['name' => 'bridge-lan', 'type' => 'bridge'],
+                ['name' => 'ether1', 'type' => 'ether'],
+            ],
+            '/rest/interface/bridge/port' => [
+                ['.id' => '*1', 'bridge' => 'bridge-lan', 'interface' => 'ether2'],
+            ],
+            '/rest/ip/address' => [
+                [
+                    '.id' => '*2',
+                    'address' => '192.168.10.1/24',
+                    'interface' => 'bridge-lan',
+                    'disabled' => 'no',
+                    'comment' => 'MMUTech managed LAN address',
+                ],
+            ],
+            '/rest/ip/pool' => [
+                [
+                    '.id' => '*3',
+                    'name' => 'Branch-HQ',
+                    'ranges' => '192.168.10.20-192.168.10.200',
+                    'comment' => 'MMUTech managed LAN DHCP pool',
+                ],
+            ],
+            '/rest/ip/dhcp-server' => [
+                [
+                    '.id' => '*4',
+                    'name' => 'mmutech-lan-dhcp',
+                    'interface' => 'bridge-lan',
+                    'address-pool' => 'Branch-HQ',
+                    'lease-time' => '1d',
+                    'disabled' => 'no',
+                    'comment' => 'MMUTech managed LAN DHCP server',
+                ],
+            ],
+            '/rest/ip/dhcp-server/network' => [
+                [
+                    '.id' => '*5',
+                    'address' => '192.168.10.0/24',
+                    'gateway' => '192.168.10.1',
+                    'dns-server' => '1.1.1.1,8.8.8.8',
+                    'comment' => 'MMUTech managed LAN DHCP network',
+                ],
+            ],
+            '/rest/ip/firewall/nat' => [
+                [
+                    '.id' => '*6',
+                    'chain' => 'srcnat',
+                    'action' => 'masquerade',
+                    'src-address' => '0.0.0.0/0',
+                    'out-interface' => 'ether1',
+                    'disabled' => 'no',
+                    'comment' => 'other srcnat rule',
+                ],
+                [
+                    '.id' => '*7',
+                    'chain' => 'srcnat',
+                    'action' => 'masquerade',
+                    'src-address' => '192.168.10.0/24',
+                    'out-interface' => 'ether1',
+                    'disabled' => 'no',
+                    'comment' => 'MMUTech managed LAN masquerade',
+                ],
+            ],
+            '/rest/ip/firewall/filter' => $filterRows,
+        ];
+        $writes = [];
+        $configurator = $this->configuratorWithRouterState($state, $writes);
+        $router = $this->router();
+
+        $before = $configurator->verify($router, $configuration, 'correlation-id');
+
+        $this->assertSame([], $writes);
+        $this->assertSame('failed', $before['firewall']['status']);
+        $this->assertSame('warning', $before['nat_precedence']['status']);
+
+        $checks = $configurator->configure($router, $configuration, 'correlation-id');
+
+        $this->assertSame('passed', $checks['firewall']['status']);
+        $this->assertSame('passed', $checks['firewall_precedence']['status']);
+        $this->assertSame('passed', $checks['nat_precedence']['status']);
+        $this->assertSame(
+            array_column($rules, 'comment'),
+            collect($state['/rest/ip/firewall/filter'])->pluck('comment')->values()->all(),
+        );
+        $this->assertSame('MMUTech managed LAN masquerade', $state['/rest/ip/firewall/nat'][0]['comment']);
+        $this->assertContains(
+            '/rest/ip/firewall/nat/move',
+            collect($writes)->pluck('endpoint')->all(),
+        );
+        $this->assertSame(
+            8,
+            collect($writes)->filter(
+                fn (array $write): bool => $write['endpoint'] === '/rest/ip/firewall/filter/move'
+            )->count(),
+        );
+
+        $writesBeforeVerify = count($writes);
+        $configurator->verify($router, $configuration, 'correlation-id');
+
+        $this->assertCount($writesBeforeVerify, $writes);
+    }
+
     public function test_it_stops_on_an_overlapping_lan_subnet_before_writing(): void
     {
         $state = [
@@ -345,6 +471,47 @@ class MikrotikRouterConfiguratorTest extends TestCase
                 return [$row];
             }
         );
+        $client->method('post')->willReturnCallback(
+            function (string $endpoint, array $payload) use (&$state, &$writes): array {
+                $resource = substr($endpoint, 0, -strlen('/move'));
+                $id = $payload['.id'] ?? null;
+                $destinationId = $payload['destination'] ?? null;
+                $rows = $state[$resource] ?? [];
+                $from = null;
+
+                foreach ($rows as $index => $row) {
+                    if (($row['.id'] ?? null) === $id) {
+                        $from = $index;
+
+                        break;
+                    }
+                }
+
+                if ($from !== null) {
+                    $movingRow = $rows[$from];
+                    array_splice($rows, $from, 1);
+                    $destinationIndex = null;
+
+                    foreach ($rows as $index => $row) {
+                        if (($row['.id'] ?? null) === $destinationId) {
+                            $destinationIndex = $index;
+
+                            break;
+                        }
+                    }
+
+                    if ($destinationIndex !== null) {
+                        array_splice($rows, $destinationIndex, 0, [$movingRow]);
+                    }
+
+                    $state[$resource] = $rows;
+                }
+
+                $writes[] = ['endpoint' => $endpoint, 'payload' => $payload];
+
+                return [];
+            }
+        );
         $client->method('patch')->willReturnCallback(
             function (string $endpoint, array $payload) use (&$state): array {
                 $separator = strrpos($endpoint, '/');
@@ -370,6 +537,49 @@ class MikrotikRouterConfiguratorTest extends TestCase
             $connections,
             $this->createMock(RouterApiRecorder::class),
         );
+    }
+
+    /** @return array<int, array{comment: string, settings: array<string, string>}> */
+    private function expectedFirewallRuleDefinitions(string $managementCidr = '10.20.1.0/24'): array
+    {
+        return [
+            [
+                'comment' => 'MMUTech managed firewall input established',
+                'settings' => ['chain' => 'input', 'connection-state' => 'established,related,untracked', 'action' => 'accept', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall input management 1',
+                'settings' => ['chain' => 'input', 'src-address' => $managementCidr, 'protocol' => 'tcp', 'dst-port' => '443', 'action' => 'accept', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall input invalid',
+                'settings' => ['chain' => 'input', 'connection-state' => 'invalid', 'action' => 'drop', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall input DHCP from LAN',
+                'settings' => ['chain' => 'input', 'in-interface' => 'bridge-lan', 'protocol' => 'udp', 'dst-port' => '67', 'action' => 'accept', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall input drop WAN',
+                'settings' => ['chain' => 'input', 'in-interface' => 'ether1', 'action' => 'drop', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall forward established',
+                'settings' => ['chain' => 'forward', 'connection-state' => 'established,related,untracked', 'action' => 'accept', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall forward invalid',
+                'settings' => ['chain' => 'forward', 'connection-state' => 'invalid', 'action' => 'drop', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall forward LAN to WAN',
+                'settings' => ['chain' => 'forward', 'in-interface' => 'bridge-lan', 'out-interface' => 'ether1', 'src-address' => '192.168.10.0/24', 'action' => 'accept', 'disabled' => 'no'],
+            ],
+            [
+                'comment' => 'MMUTech managed firewall forward drop WAN',
+                'settings' => ['chain' => 'forward', 'in-interface' => 'ether1', 'connection-state' => 'new', 'connection-nat-state' => '!dstnat', 'action' => 'drop', 'disabled' => 'no'],
+            ],
+        ];
     }
 
     /** @return array<string, mixed> */
