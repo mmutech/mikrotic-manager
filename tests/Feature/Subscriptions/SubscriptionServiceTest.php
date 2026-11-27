@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\Subscriptions;
 
+use App\Enums\SubscriptionType;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\SubscriptionPricingService;
 use App\Services\SubscriptionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use RuntimeException;
@@ -46,15 +48,38 @@ class SubscriptionServiceTest extends TestCase
         $target = User::factory()->create();
         $target->assignRole('network-admin');
 
+        app(SubscriptionPricingService::class)->updatePrices([
+            'monthly' => 1200,
+            'yearly' => 15000,
+        ], $actor);
+
         $this->actingAs($actor);
 
-        $subscription = app(SubscriptionService::class)->activate($target, 45, 'premium', 15000);
+        $subscription = app(SubscriptionService::class)->activate($target, SubscriptionType::Monthly);
 
         $this->assertSame('active', $subscription->status);
-        $this->assertSame('premium', $subscription->plan);
+        $this->assertSame('monthly', $subscription->plan);
+        $this->assertSame(SubscriptionType::Monthly, $subscription->type);
+        $this->assertSame('1200.00', (string) $subscription->amount);
         $this->assertTrue($subscription->isActive());
-        $this->assertSame(now()->addDays(45)->toDateString(), $subscription->expires_at->toDateString());
+        $this->assertSame(now()->addDays(30)->toDateString(), $subscription->expires_at->toDateString());
         $this->assertTrue($target->fresh()->hasActiveSubscription());
+    }
+
+    public function test_yearly_activation_uses_the_type_duration(): void
+    {
+        $actor = User::factory()->create();
+        $actor->assignRole('super-admin');
+        $target = User::factory()->create();
+        $target->assignRole('network-admin');
+
+        $this->actingAs($actor);
+        $subscription = app(SubscriptionService::class)->activate($target, SubscriptionType::Yearly);
+
+        $this->assertSame('yearly', $subscription->plan);
+        $this->assertSame(SubscriptionType::Yearly, $subscription->type);
+        $this->assertSame(365, $subscription->durationDays());
+        $this->assertSame(now()->addDays(365)->toDateString(), $subscription->expires_at->toDateString());
     }
 
     public function test_activation_extends_from_existing_expiry(): void
@@ -69,7 +94,7 @@ class SubscriptionServiceTest extends TestCase
         ]);
 
         $this->actingAs($actor);
-        $new = app(SubscriptionService::class)->activate($target, 30);
+        $new = app(SubscriptionService::class)->activate($target, SubscriptionType::Monthly);
 
         $this->assertSame(
             $current->expires_at->copy()->addDays(30)->toDateString(),

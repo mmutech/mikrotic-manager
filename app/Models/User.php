@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Enums\UserStatus;
+use App\Support\Roles;
+use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -10,12 +12,24 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, HasRoles, Notifiable, SoftDeletes;
+    /** @use HasFactory<UserFactory> */
+    use HasApiTokens, HasFactory, HasRoles, Notifiable, SoftDeletes;
+
+    /**
+     * Roles and permissions are defined with the `web` guard on every surface,
+     * including token-authenticated API requests. Sanctum makes `sanctum` the
+     * default guard for a request, so pin the model to `web` to keep Spatie's
+     * permission lookups consistent.
+     */
+    public function guardName(): string
+    {
+        return 'web';
+    }
 
     protected $fillable = [
         'name',
@@ -79,11 +93,12 @@ class User extends Authenticatable
 
     public function requiresSubscription(): bool
     {
-        return $this->hasRole('network-admin');
+        return $this->hasRole(Roles::SUBSCRIBERS);
     }
 
     /**
-     * Network administrators must hold a valid subscription to operate.
+     * Network administrators and sales agents must hold a valid subscription
+     * to operate because their router access is subscription-bound.
      */
     public function hasActiveSubscription(): bool
     {
@@ -93,12 +108,18 @@ class User extends Authenticatable
         if (! $this->requiresSubscription()) {
             return true;
         }
+
         return $this->activeSubscription() !== null;
     }
 
     public function isActive(): bool
     {
         return $this->status === UserStatus::Active && ! $this->trashed();
+    }
+
+    public function isInactive(): bool
+    {
+        return ! $this->isActive();
     }
 
     public function isSuperAdmin(): bool
@@ -128,6 +149,7 @@ class User extends Authenticatable
         if ($this->isSuperAdmin()) {
             return [];
         }
+
         return $this->routers()->pluck('routers.id')->all();
     }
 

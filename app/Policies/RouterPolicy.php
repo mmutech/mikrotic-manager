@@ -9,12 +9,8 @@ class RouterPolicy
 {
     public function viewAny(User $user): bool
     {
-        if ($user->isSuperAdmin()) {
-            return $user->can('routers.view');
-        }
-        if ($user->hasRole('network-admin') || $user->hasRole('support')) {
-            return $user->can('routers.view');
-        }
+        // Listing is safe for any role with routers.view; the controller scope
+        // limits rows to the caller's assigned routers.
         return $user->can('routers.view');
     }
 
@@ -23,6 +19,7 @@ class RouterPolicy
         if ($user->isSuperAdmin()) {
             return $user->can('routers.view');
         }
+
         return $user->can('routers.view') && $user->canAccessRouter($router);
     }
 
@@ -39,6 +36,7 @@ class RouterPolicy
         if ($user->hasRole('network-admin')) {
             return $user->can('routers.manage') && $user->canAccessRouter($router);
         }
+
         return false;
     }
 

@@ -11,8 +11,11 @@ use Livewire\Component;
 new #[Layout('layouts::app')] #[Title('Edit user')] class extends Component
 {
     public User $user;
+
     public string $name = '';
+
     public string $email = '';
+
     public string $status = 'active';
 
     public function mount(User $user): void
@@ -27,17 +30,28 @@ new #[Layout('layouts::app')] #[Title('Edit user')] class extends Component
     public function save(AuditLogger $audit): void
     {
         $this->authorize('update', $this->user);
-        $validated = $this->validate([
+
+        $rules = [
             'name' => ['required', 'string', 'max:150'],
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($this->user->id)],
-            'status' => ['required', 'in:active,suspended,invited,disabled'],
-        ]);
-        $before = $this->user->only(['name', 'email', 'status']);
-        $this->user->update([
+        ];
+
+        if ($this->canChangeStatus()) {
+            $rules['status'] = ['required', Rule::enum(UserStatus::class)];
+        }
+
+        $validated = $this->validate($rules);
+        $updates = [
             'name' => $validated['name'],
             'email' => $validated['email'],
-            'status' => UserStatus::from($validated['status']),
-        ]);
+        ];
+
+        if ($this->canChangeStatus()) {
+            $updates['status'] = UserStatus::from($validated['status']);
+        }
+
+        $before = $this->user->only(['name', 'email', 'status']);
+        $this->user->update($updates);
         $audit->record('user.updated', $this->user, before: $before, after: $this->user->fresh()->only(['name', 'email', 'status']), actor: auth()->user());
         session()->flash('status', 'User updated.');
         $this->redirectRoute('users.show', ['user' => $this->user->id], navigate: true);
@@ -45,7 +59,15 @@ new #[Layout('layouts::app')] #[Title('Edit user')] class extends Component
 
     public function render()
     {
-        return $this->view()->title('Edit user');
+        return $this->view([
+            'canChangeStatus' => $this->canChangeStatus(),
+        ])->title('Edit user');
+    }
+
+    private function canChangeStatus(): bool
+    {
+        return auth()->user()->can('manageStatus', User::class)
+            && $this->user->getKey() !== auth()->id();
     }
 };
 ?>
@@ -66,16 +88,23 @@ new #[Layout('layouts::app')] #[Title('Edit user')] class extends Component
             <input type="email" wire:model="email" class="mm-input">
             @error('email') <p class="mm-error">{{ $message }}</p> @enderror
         </div>
-        <div>
-            <label class="mm-label">Status *</label>
-            <select wire:model="status" class="mm-input">
-                <option value="active">Active</option>
-                <option value="suspended">Suspended</option>
-                <option value="invited">Invited</option>
-                <option value="disabled">Disabled</option>
-            </select>
-            @error('status') <p class="mm-error">{{ $message }}</p> @enderror
-        </div>
+        @if ($canChangeStatus)
+            <div>
+                <label class="mm-label">Status *</label>
+                <select wire:model="status" class="mm-input">
+                    @foreach (UserStatus::options() as $value => $label)
+                        <option value="{{ $value }}">{{ $label }}</option>
+                    @endforeach
+                </select>
+                @error('status') <p class="mm-error">{{ $message }}</p> @enderror
+            </div>
+        @else
+            <div>
+                <span class="mm-label block">Status</span>
+                <span class="mm-badge {{ $user->status->badgeClasses() }}">{{ $user->status->label() }}</span>
+                <p class="mt-1 text-xs text-slate-500">Only a super-admin can change account status.</p>
+            </div>
+        @endif
         <div class="flex justify-end gap-3">
             <a href="{{ route('users.show', $user) }}" class="mm-btn-secondary">Cancel</a>
             <button type="submit" class="mm-btn-primary">Save changes</button>

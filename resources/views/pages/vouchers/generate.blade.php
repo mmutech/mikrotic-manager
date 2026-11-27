@@ -50,7 +50,7 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
         $this->authorize('generate', Voucher::class);
 
         $user = auth()->user();
-        $routerIds = $user->isSuperAdmin() ? Router::pluck('id')->all() : $user->routers()->pluck('routers.id')->all();
+        $routerIds = Router::query()->visibleTo($user)->pluck('routers.id')->all();
 
         $validated = $this->validate([
             'router_id' => ['required', 'integer', Rule::in($routerIds)],
@@ -59,7 +59,7 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
             'prefix' => ['nullable', 'string', 'max:10', 'alpha_num'],
         ]);
 
-        $router = Router::findOrFail($validated['router_id']);
+        $router = Router::query()->visibleTo($user)->findOrFail($validated['router_id']);
         $plan = Plan::where('id', $validated['plan_id'])->where('router_id', $router->id)->where('is_active', true)->firstOrFail();
         $profileMapping = $plan->profileMappings()
             ->where('router_id', $router->id)
@@ -123,20 +123,19 @@ new #[Layout('layouts::app')] #[Title('Generate vouchers')] class extends Compon
     public function render()
     {
         $user = auth()->user();
+        $visibleRouterIds = Router::query()->visibleTo($user)->pluck('routers.id');
 
-        $routers = $user->isSuperAdmin() ? Router::query()->orderBy('name')->get() : $user->routers()->orderBy('name')->get();
-        $plans = collect();
+        $routers = Router::query()->visibleTo($user)->orderBy('name')->get();
+        $plans = Plan::query()
+            ->with('profileMappings')
+            ->where('is_active', true)
+            ->whereIn('router_id', $visibleRouterIds);
 
-        if ($this->router_id) {
-            $plans = Plan::query()
-                ->with('profileMappings')
-                ->where('is_active', true)
-                ->where('router_id', $this->router_id)
-                ->orderBy('name')
-                ->get();
-        } else {
-            $plans = Plan::query()->with('profileMappings')->where('is_active', true)->orderBy('name')->get();
+        if ($this->router_id !== '' && $visibleRouterIds->contains((int) $this->router_id)) {
+            $plans->where('router_id', $this->router_id);
         }
+
+        $plans = $plans->orderBy('name')->get();
 
         return $this->view([
             'routers' => $routers,

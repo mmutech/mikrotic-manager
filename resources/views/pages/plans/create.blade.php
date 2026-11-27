@@ -142,7 +142,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
         }
 
         $user = auth()->user();
-        $routerIds = $user->isSuperAdmin() ? Router::pluck('id')->all() : $user->routers()->pluck('routers.id')->all();
+        $routerIds = Router::query()->visibleTo($user)->pluck('routers.id')->all();
 
         $validated = $this->validate([
             'name' => ['required', 'string', 'max:120'],
@@ -203,7 +203,7 @@ new #[Layout('layouts::app')] #[Title('Create plan')] class extends Component
     public function render()
     {
         $user = auth()->user();
-        $routers = $user->isSuperAdmin() ? Router::orderBy('name')->get() : $user->routers()->orderBy('name')->get();
+        $routers = Router::query()->visibleTo($user)->orderBy('name')->get();
 
         return $this->view([
             'routers' => $routers,

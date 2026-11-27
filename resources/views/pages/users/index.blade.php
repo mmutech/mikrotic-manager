@@ -1,6 +1,8 @@
 <?php
 
+use App\Enums\UserStatus;
 use App\Models\User;
+use App\Services\Users\UserStatusService;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -12,7 +14,35 @@ new #[Layout('layouts::app')] #[Title('Users')] class extends Component
 
     public string $search = '';
 
-    public function updatedSearch(): void { $this->resetPage(); }
+    public function updatedSearch(): void
+    {
+        $this->resetPage();
+    }
+
+    public function setStatus(int $userId, string $status, UserStatusService $service): void
+    {
+        $this->authorize('manageStatus', User::class);
+
+        $target = User::findOrFail($userId);
+        $newStatus = UserStatus::tryFrom($status);
+
+        if ($newStatus === null) {
+            return;
+        }
+
+        if ($target->getKey() === auth()->id()) {
+            session()->flash('status', 'You cannot change your own account status.');
+
+            return;
+        }
+
+        if ($service->change($target, $newStatus, auth()->user())) {
+            session()->flash('status', match ($newStatus) {
+                UserStatus::Active => 'User activated.',
+                UserStatus::Inactive => 'User deactivated.',
+            });
+        }
+    }
 
     public function render()
     {
@@ -24,9 +54,11 @@ new #[Layout('layouts::app')] #[Title('Users')] class extends Component
                 $q->where('name', 'like', $term)->orWhere('email', 'like', $term);
             });
         }
+
         return $this->view([
             'users' => $query->latest()->paginate(15),
             'canCreate' => auth()->user()->can('create', User::class),
+            'canManageStatus' => auth()->user()->can('manageStatus', User::class),
         ])->title('Users');
     }
 };
@@ -65,8 +97,31 @@ new #[Layout('layouts::app')] #[Title('Users')] class extends Component
                             <td class="mm-td font-semibold text-slate-900">{{ $user->name }}</td>
                             <td class="mm-td">{{ $user->email }}</td>
                             <td class="mm-td">{{ $user->roles->pluck('name')->implode(', ') }}</td>
-                            <td class="mm-td text-xs">{{ $user->status->value }}</td>
-                            <td class="mm-td text-right"><a href="{{ route('users.show', $user) }}" class="text-sm font-semibold text-brand-600 hover:text-brand-700">View</a></td>
+                            <td class="mm-td">
+                                <span class="mm-badge {{ $user->status->badgeClasses() }}">{{ $user->status->label() }}</span>
+                            </td>
+                            <td class="mm-td text-right">
+                                <div class="flex items-center justify-end gap-3">
+                                    @if ($canManageStatus && $user->getKey() !== auth()->id())
+                                        @if ($user->isActive())
+                                            <button
+                                                type="button"
+                                                wire:click="setStatus({{ $user->getKey() }}, 'inactive')"
+                                                wire:confirm="Deactivate {{ $user->name }}? They will be signed out and unable to sign in."
+                                                class="text-sm font-semibold text-amber-600 hover:text-amber-700"
+                                            >Deactivate</button>
+                                        @else
+                                            <button
+                                                type="button"
+                                                wire:click="setStatus({{ $user->getKey() }}, 'active')"
+                                                wire:confirm="Activate {{ $user->name }}? They will be able to sign in immediately."
+                                                class="text-sm font-semibold text-emerald-600 hover:text-emerald-700"
+                                            >Activate</button>
+                                        @endif
+                                    @endif
+                                    <a href="{{ route('users.show', $user) }}" class="text-sm font-semibold text-brand-600 hover:text-brand-700">View</a>
+                                </div>
+                            </td>
                         </tr>
                     @endforeach
                 </tbody>

@@ -415,7 +415,7 @@ new #[Layout('layouts::app')] #[Title('Vouchers')] class extends Component
         return $this->view([
             'vouchers' => $vouchers,
             'liveUsage' => app(LiveVoucherUsageService::class)->forVouchers($vouchers->getCollection()),
-            'routers' => Router::query()->orderBy('name')->get(),
+            'routers' => Router::query()->visibleTo($user)->orderBy('name')->get(),
             'canGenerate' => auth()->user()->can('generate', Voucher::class),
             'canProvision' => auth()->user()->can('vouchers.provision'),
             'canRevoke' => $canRevoke,

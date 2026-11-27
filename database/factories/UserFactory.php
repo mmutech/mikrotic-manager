@@ -37,10 +37,10 @@ class UserFactory extends Factory
         ]);
     }
 
-    public function suspended(): static
+    public function inactive(): static
     {
         return $this->state(fn (array $attributes) => [
-            'status' => UserStatus::Suspended,
+            'status' => UserStatus::Inactive,
         ]);
     }
 }

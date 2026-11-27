@@ -108,12 +108,13 @@ The payment path is implemented as services and callback/webhook endpoints. No c
 
 ```mermaid
 flowchart TD
-    A[Network admin opens subscription page] --> B[Submit renewal request]
-    B --> C[Create pending subscription request]
+    P[Super-admin sets monthly and yearly prices] --> A[Subscriber opens subscription page]
+    A --> B[Choose monthly or yearly plan; submit renewal request]
+    B --> C[Create pending request with type and configured price snapshot]
     C --> D[Super-admin reviews request]
     D --> E{Approve / activate?}
     E -->|No| F[Request remains pending or is handled by admin]
-    E -->|Yes| G[Activate subscription; clamp term to 1-365 days]
+    E -->|Yes| G[Activate using requested type and current configured price]
     G --> H{Existing active subscription expires in future?}
     H -->|Yes| I[Start new term at current expiry]
     H -->|No| J[Start new term now]
@@ -125,7 +126,7 @@ flowchart TD
     M -->|No| O[Access remains until expiry]
 ```
 
-Renewal requests are not payment-backed. A super-admin activates or deactivates subscriptions manually. Activation extends from a still-future expiry and ensures only the new record remains active.
+Renewal requests are not payment-backed. The subscription plan is its type: `monthly` (30 days) or `yearly` (365 days). Existing rows default to `monthly`, and the legacy `plan` column mirrors the type. A super-admin sets the price for each type; requests snapshot the price shown to the subscriber, while approval/activation uses the current configured price. Activation extends from a still-future expiry and ensures only the new record remains active.
 
 ## Regression test cases
 
@@ -182,12 +183,14 @@ Use isolated database fixtures and fake queues/HTTP/router gateways where applic
 
 | ID | Scenario and steps | Expected result | Coverage |
 |---|---|---|---|
-| SUB-01 | As a network admin without an active subscription, submit a renewal request. | A pending subscription request is created and operational routes remain gated. | Existing: `SubscriptionGatingTest` |
-| SUB-02 | As a non-super-admin, attempt activation and deactivation. | Both operations throw an authorization error and do not change subscription rows. | Existing: `SubscriptionServiceTest` |
-| SUB-03 | As a super-admin, activate a user with no active subscription. | New subscription is active, has the requested plan/term, and an audit event is written. | Existing: `SubscriptionServiceTest` |
+| SUB-01 | As a subscriber without an active subscription, submit a renewal request with `monthly` and then with `yearly`. | Pending requests are created with the selected type and the configured price snapshot; operational routes remain gated. | Existing: `MobileApiTest` covers yearly; `SubscriptionGatingTest` covers gating |
+| SUB-02 | As a non-super-admin, attempt activation, deactivation, or price updates. | All operations are forbidden and do not change subscription rows or prices. | Existing: `SubscriptionServiceTest`, `MobileApiTest` |
+| SUB-03 | As a super-admin, activate a user with no active subscription. | New subscription is active, uses the selected type/term and configured price, mirrors the type into the legacy plan column, and is audited. | Existing: `SubscriptionServiceTest` |
 | SUB-04 | Activate while an existing active subscription expires in the future and a renewal request is pending. | New term starts at the old expiry; old active row expires; pending request becomes approved; only one row is active. | Existing: `SubscriptionServiceTest` |
-| SUB-05 | Activate with day values below 1 or above 365. | Term is clamped to 1 or 365 days respectively. | Recommended |
+| SUB-05 | Submit an invalid subscription type or negative price. | Validation fails; no subscription or price setting is changed. | Existing: `MobileApiTest` covers admin price update; validation rules are in `SubscriptionController` |
 | SUB-06 | As a super-admin, deactivate a user with an active subscription. | Active rows expire, access is gated again, and deactivation is audited; no-active-subscription case returns zero without a false state change. | Existing: `SubscriptionServiceTest` covers the active case |
+| SUB-07 | Approve a pending `yearly` request with no override payload. | The activated subscription is `yearly`, uses a 365-day term, snapshots the current yearly price, and reports `duration_days` as 365. | Existing: `MobileApiTest` |
+| SUB-08 | As a super-admin, update monthly/yearly prices via web or API, then request and activate each type. | Prices persist in `settings`, are returned by `/subscription/plans`, and are applied to new requests and activations. | Existing: `SubscriptionPricingServiceTest`, `MobileApiTest` |
 
 ## Current coverage snapshot
 

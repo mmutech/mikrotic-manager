@@ -4,11 +4,8 @@ namespace Tests\Feature\Auth;
 
 use App\Enums\UserStatus;
 use App\Models\User;
-use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\Password;
 use Tests\TestCase;
 
 class AuthenticationTest extends TestCase
@@ -36,10 +33,10 @@ class AuthenticationTest extends TestCase
         $this->get('/dashboard')->assertOk();
     }
 
-    public function test_suspended_user_cannot_access_protected_routes(): void
+    public function test_inactive_user_cannot_access_protected_routes(): void
     {
         $user = User::factory()->create([
-            'status' => UserStatus::Suspended,
+            'status' => UserStatus::Inactive,
         ]);
 
         $this->actingAs($user);

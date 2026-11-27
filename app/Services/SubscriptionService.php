@@ -2,23 +2,34 @@
 
 namespace App\Services;
 
+use App\Enums\SubscriptionType;
 use App\Models\Subscription;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 
 class SubscriptionService
 {
-    public function __construct(private readonly AuditLogger $audit) {}
+    public function __construct(
+        private readonly AuditLogger $audit,
+        private readonly SubscriptionPricingService $pricing,
+    ) {}
 
-    public function activate(User $user, int $days = 30, string $plan = 'basic', float $amount = 0, string $currency = 'NGN'): Subscription
-    {
+    public function activate(
+        User $user,
+        SubscriptionType $type = SubscriptionType::Monthly,
+        ?float $amount = null,
+        ?string $currency = null,
+    ): Subscription {
         $actor = auth()->user();
 
         if (! $actor?->isSuperAdmin()) {
             throw new \RuntimeException('Only super administrators can activate subscriptions.');
         }
 
-        $days = max(1, min(365, $days));
+        $days = $type->days();
+        $amount ??= $this->pricing->priceFor($type);
+        $currency = strtoupper($currency ?? $this->pricing->currency());
+
         $current = $user->activeSubscription();
         $startsAt = $current?->expires_at?->isFuture() ? $current->expires_at->copy() : Carbon::now();
 
@@ -28,7 +39,8 @@ class SubscriptionService
 
         $subscription = Subscription::create([
             'user_id' => $user->id,
-            'plan' => $plan,
+            'plan' => $type->value,
+            'type' => $type,
             'status' => 'active',
             'starts_at' => $startsAt,
             'expires_at' => $startsAt->copy()->addDays($days),
@@ -58,6 +70,23 @@ class SubscriptionService
 
         if ($count > 0) {
             $this->audit->record('subscription.deactivated', $user, metadata: ['count' => $count], actor: $actor);
+        }
+
+        return $count;
+    }
+
+    public function reject(User $user): int
+    {
+        $actor = auth()->user();
+
+        if (! $actor?->isSuperAdmin()) {
+            throw new \RuntimeException('Only super administrators can reject subscriptions.');
+        }
+
+        $count = $user->subscriptions()->where('status', 'pending')->update(['status' => 'rejected']);
+
+        if ($count > 0) {
+            $this->audit->record('subscription.rejected', $user, metadata: ['count' => $count], actor: $actor);
         }
 
         return $count;

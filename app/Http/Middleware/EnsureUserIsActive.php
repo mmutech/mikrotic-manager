@@ -14,6 +14,19 @@ class EnsureUserIsActive
         $user = $request->user();
 
         if ($user !== null && ! $user->isActive()) {
+            if ($request->is('api/*') || $request->expectsJson()) {
+                $token = $user->currentAccessToken();
+
+                if ($token !== null && method_exists($token, 'delete')) {
+                    $token->delete();
+                }
+
+                return response()->json([
+                    'message' => 'This account is not active. Contact an administrator.',
+                    'error' => 'account_inactive',
+                ], Response::HTTP_FORBIDDEN);
+            }
+
             Auth::guard('web')->logout();
             $request->session()->invalidate();
             $request->session()->regenerateToken();

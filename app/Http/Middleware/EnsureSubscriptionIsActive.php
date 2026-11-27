@@ -13,6 +13,13 @@ class EnsureSubscriptionIsActive
         $user = $request->user();
 
         if ($user !== null && ! $user->hasActiveSubscription()) {
+            if ($request->is('api/*') || $request->expectsJson()) {
+                return response()->json([
+                    'message' => 'Your subscription has expired. Renew it to continue using the platform.',
+                    'error' => 'subscription_inactive',
+                ], Response::HTTP_FORBIDDEN);
+            }
+
             return redirect()
                 ->route('subscriptions.index')
                 ->with('error', 'Your subscription has expired. Renew it to continue using the platform.');

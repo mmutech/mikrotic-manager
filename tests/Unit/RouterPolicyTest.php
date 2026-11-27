@@ -2,10 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Models\User;
 use App\Models\Router;
-use App\Policies\RouterPolicy;
-use App\Support\Redactor;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Gate;
 use Tests\TestCase;
@@ -71,5 +69,34 @@ class RouterPolicyTest extends TestCase
         $this->actingAs($admin);
         $this->assertTrue(Gate::allows('grantAccess', $router));
         $this->assertTrue(Gate::allows('revokeAccess', $router));
+    }
+
+    public function test_super_admin_sees_all_routers(): void
+    {
+        $admin = User::factory()->create();
+        $admin->assignRole('super-admin');
+        $first = Router::factory()->create();
+        $second = Router::factory()->create();
+
+        $visible = Router::query()->visibleTo($admin)->pluck('routers.id')->all();
+
+        $this->assertEqualsCanonicalizing([$first->id, $second->id], $visible);
+    }
+
+    public function test_non_admin_sees_only_assigned_routers(): void
+    {
+        $user = User::factory()->create();
+        $user->assignRole('network-admin');
+        $assigned = Router::factory()->create();
+        $unassigned = Router::factory()->create();
+        $assigned->users()->attach($user->id);
+
+        $this->actingAs($user);
+
+        $visible = Router::query()->visibleTo($user)->pluck('routers.id')->all();
+
+        $this->assertSame([$assigned->id], $visible);
+        $this->assertTrue(Gate::allows('view', $assigned));
+        $this->assertFalse(Gate::allows('view', $unassigned));
     }
 }

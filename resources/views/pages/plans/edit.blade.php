@@ -76,7 +76,7 @@ new #[Layout('layouts::app')] #[Title('Edit plan')] class extends Component
         $this->hotspotProfilesLoaded = false;
         $this->resetErrorBag('hotspotProfiles');
 
-        $router = Router::query()->find($this->plan->router_id);
+        $router = Router::query()->visibleTo(auth()->user())->find($this->plan->router_id);
 
         if ($router === null) {
             $this->addError('hotspotProfiles', 'The router for this plan is unavailable.');

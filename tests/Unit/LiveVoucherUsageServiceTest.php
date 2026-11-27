@@ -43,10 +43,16 @@ class LiveVoucherUsageServiceTest extends TestCase
         $this->assertSame('Not connected', $usage->get(2)['duration']);
     }
 
-    public function test_it_reports_live_reads_as_unavailable_when_the_router_fails(): void
+    public function test_it_falls_back_to_stored_usage_when_the_router_fails(): void
     {
         $router = new Router(['id' => 1, 'name' => 'HQ']);
-        $voucher = (new Voucher)->forceFill(['id' => 1, 'username' => 'VOUCHER-A', 'router_id' => 1]);
+        $voucher = (new Voucher)->forceFill([
+            'id' => 1,
+            'username' => 'VOUCHER-A',
+            'router_id' => 1,
+            'time_used_seconds' => 65,
+            'used_bytes' => 1536,
+        ]);
         $voucher->setRelation('router', $router);
 
         $gateway = $this->createMock(RouterGateway::class);
@@ -56,8 +62,8 @@ class LiveVoucherUsageServiceTest extends TestCase
         $usage = (new LiveVoucherUsageService($gateway, new CorrelationContext))
             ->forVoucher($voucher);
 
-        $this->assertSame('unavailable', $usage['status']);
-        $this->assertSame('Live read unavailable', $usage['duration']);
-        $this->assertSame('Live read unavailable', $usage['consumption']);
+        $this->assertSame('stored', $usage['status']);
+        $this->assertSame('1m 5s', $usage['duration']);
+        $this->assertSame('1.5 KB', $usage['consumption']);
     }
 }

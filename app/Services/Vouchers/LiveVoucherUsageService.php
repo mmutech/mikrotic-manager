@@ -68,10 +68,12 @@ final class LiveVoucherUsageService
     private function usageFor(Voucher $voucher, ?Collection $sessions): array
     {
         if ($sessions === null) {
+            // RouterOS is unreachable, so fall back to the usage already recorded
+            // on the voucher instead of leaving the screen blank.
             return [
-                'status' => 'unavailable',
-                'duration' => 'Live read unavailable',
-                'consumption' => 'Live read unavailable',
+                'status' => 'stored',
+                'duration' => Voucher::formatDuration((int) ($voucher->time_used_seconds ?? 0)),
+                'consumption' => Voucher::formatBytes((int) ($voucher->used_bytes ?? 0)),
             ];
         }
 

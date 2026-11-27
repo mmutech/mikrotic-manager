@@ -110,6 +110,16 @@ final class Permissions
                 self::REPORTS_VIEW,
                 self::CUSTOMERS_VIEW,
             ],
+            'sales-agent' => [
+                self::DASHBOARD_VIEW,
+                self::ROUTERS_VIEW,
+                self::PLANS_VIEW,
+                self::VOUCHERS_VIEW,
+                self::VOUCHERS_GENERATE,
+                self::VOUCHERS_PROVISION,
+                self::VOUCHERS_REVOKE,
+                self::VOUCHERS_PRINT,
+            ],
             'support' => [
                 self::DASHBOARD_VIEW,
                 self::CUSTOMERS_VIEW,

@@ -26,6 +26,7 @@ class UserPolicy
         if ($user->isSuperAdmin()) {
             return true;
         }
+
         return $user->id === $model->id;
     }
 
@@ -34,6 +35,7 @@ class UserPolicy
         if ($model->isSuperAdmin()) {
             return false;
         }
+
         return $user->isSuperAdmin();
     }
 
@@ -43,6 +45,11 @@ class UserPolicy
     }
 
     public function assignRouter(User $user): bool
+    {
+        return $user->isSuperAdmin();
+    }
+
+    public function manageStatus(User $user): bool
     {
         return $user->isSuperAdmin();
     }

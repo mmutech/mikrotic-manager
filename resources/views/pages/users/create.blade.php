@@ -12,8 +12,11 @@ use Livewire\Component;
 new #[Layout('layouts::app')] #[Title('Create user')] class extends Component
 {
     public string $name = '';
+
     public string $email = '';
+
     public string $password = '';
+
     public string $status = 'active';
 
     public function mount(): void
@@ -28,7 +31,7 @@ new #[Layout('layouts::app')] #[Title('Create user')] class extends Component
             'name' => ['required', 'string', 'max:150'],
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')],
             'password' => ['required', 'string', 'min:8'],
-            'status' => ['required', 'in:active,suspended,invited,disabled'],
+            'status' => ['required', Rule::enum(UserStatus::class)],
         ]);
         $user = User::create([
             'name' => $validated['name'],
@@ -72,10 +75,9 @@ new #[Layout('layouts::app')] #[Title('Create user')] class extends Component
         <div>
             <label class="mm-label">Status *</label>
             <select wire:model="status" class="mm-input">
-                <option value="active">Active</option>
-                <option value="suspended">Suspended</option>
-                <option value="invited">Invited</option>
-                <option value="disabled">Disabled</option>
+                @foreach (UserStatus::options() as $value => $label)
+                    <option value="{{ $value }}">{{ $label }}</option>
+                @endforeach
             </select>
             @error('status') <p class="mm-error">{{ $message }}</p> @enderror
         </div>

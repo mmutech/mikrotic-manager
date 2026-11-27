@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\SubscriptionType;
 use App\Models\Subscription;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -21,7 +22,8 @@ class SubscriptionFactory extends Factory
         return [
             'user_id' => User::factory(),
             'router_id' => null,
-            'plan' => 'basic',
+            'plan' => SubscriptionType::Monthly->value,
+            'type' => SubscriptionType::Monthly,
             'status' => 'active',
             'starts_at' => now()->subDay(),
             'expires_at' => now()->addDays(30),
@@ -29,6 +31,15 @@ class SubscriptionFactory extends Factory
             'currency' => 'NGN',
             'metadata' => null,
         ];
+    }
+
+    public function yearly(): static
+    {
+        return $this->state(fn () => [
+            'plan' => SubscriptionType::Yearly->value,
+            'type' => SubscriptionType::Yearly,
+            'expires_at' => now()->addDays(SubscriptionType::Yearly->days()),
+        ]);
     }
 
     public function pending(): static

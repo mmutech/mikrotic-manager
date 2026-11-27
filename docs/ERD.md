@@ -24,7 +24,7 @@
 - `payment_webhook_events`: Paystack webhooks
 
 ### Billing
-- `subscriptions`: user_id, optional router_id, plan, status (pending/active/expired/approved), starts_at, expires_at, amount, currency, metadata — required for `network-admin` access
+- `subscriptions`: user_id, optional router_id, type (monthly/yearly plan), status (pending/active/expired/approved), starts_at, expires_at, price/amount snapshot, currency, metadata — required for `network-admin` and `sales-agent` access. The legacy `plan` column mirrors `type`; prices are admin-managed per type in `settings` (`subscription.price.monthly`, `subscription.price.yearly`)
 
 ### System
 - `audit_logs`: immutable audit trail
@@ -42,7 +42,7 @@
 - AuditLog is polymorphic (actor, auditable)
 
 ## Status Enums
-- UserStatus: Active, Suspended, Pending
+- UserStatus: Active, Inactive
 - RouterStatus: Pending, Online, Offline, Disabled, Error, Archived
 - ProvisioningStatus: Pending, Provisioning, Provisioned, Failed
 - VoucherLifecycleStatus: Pending, Active, Used, Expired, Revoked

@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\TransactionStatus;
 use App\Models\Customer;
 use App\Models\Plan;
 use App\Models\Purchase;
@@ -54,7 +55,7 @@ new #[Layout('layouts::app')] #[Title('Reports')] class extends Component
             'customersCount' => $customersQuery->count(),
             'purchasesCount' => $purchasesQuery->count(),
             'transactionsCount' => $transactionsQuery->count(),
-            'revenue' => (clone $transactionsQuery)->where('status', 'success')->sum('amount'),
+            'revenue' => (clone $transactionsQuery)->where('status', TransactionStatus::Paid->value)->sum('amount'),
         ])->title('Reports');
     }
 };
