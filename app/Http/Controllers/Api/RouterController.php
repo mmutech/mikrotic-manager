@@ -45,7 +45,7 @@ class RouterController extends Controller
             $query->where('status', $filters['status']);
         }
 
-        $routers = $query->orderBy('name')->paginate((int) ($filters['per_page'] ?? 20));
+        $routers = $query->orderBy('name')->paginate((int) ($filters['per_page'] ?? 10));
 
         $statusQuery = Router::query()->visibleTo($user);
 

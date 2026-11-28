@@ -15,6 +15,7 @@ use App\Models\Transaction;
 use App\Models\User;
 use App\Models\Voucher;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
@@ -371,13 +372,19 @@ class MobileApiTest extends TestCase
 
         $plan = Plan::factory()->create([
             'router_id' => $assignedRouter->id,
+            'price' => 1500,
+            'currency' => 'NGN',
             'is_active' => true,
         ]);
         $plan->profileMappings()->create([
             'router_id' => $assignedRouter->id,
             'hotspot_profile' => 'default',
         ]);
-        $otherPlan = Plan::factory()->create(['router_id' => $otherRouter->id]);
+        $otherPlan = Plan::factory()->create([
+            'router_id' => $otherRouter->id,
+            'price' => 9000,
+            'currency' => 'NGN',
+        ]);
         $otherVoucher = Voucher::factory()->create([
             'router_id' => $otherRouter->id,
             'plan_id' => $otherPlan->id,
@@ -457,6 +464,41 @@ class MobileApiTest extends TestCase
             ->assertJsonFragment(['public_id' => $voucher['public_id']])
             ->assertJsonMissing(['public_id' => $otherVoucher->public_id]);
 
+        Voucher::factory()->create([
+            'router_id' => $assignedRouter->id,
+            'plan_id' => $plan->id,
+            'provisioning_status' => 'provisioned',
+            'lifecycle_status' => 'active',
+        ]);
+        Voucher::factory()->create([
+            'router_id' => $assignedRouter->id,
+            'plan_id' => $plan->id,
+            'provisioning_status' => 'provisioned',
+            'lifecycle_status' => 'active',
+        ]);
+        Voucher::factory()->create([
+            'router_id' => $otherRouter->id,
+            'plan_id' => $otherPlan->id,
+            'provisioning_status' => 'provisioned',
+            'lifecycle_status' => 'active',
+        ]);
+        Voucher::factory()->create([
+            'router_id' => $assignedRouter->id,
+            'plan_id' => $plan->id,
+            'provisioning_status' => 'failed',
+        ]);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/vouchers/stats')
+            ->assertOk()
+            ->assertJsonPath('data.period', 'today')
+            ->assertJsonPath('data.total', 5)
+            ->assertJsonPath('data.revenue.period', 'today')
+            ->assertJsonPath('data.revenue.total_amount', 3000)
+            ->assertJsonPath('data.revenue.voucher_count', 2)
+            ->assertJsonPath('data.revenue.by_currency.0.currency', 'NGN')
+            ->assertJsonPath('data.revenue.by_currency.0.amount', 3000);
+
         $this->withToken($token)
             ->getJson('/api/v1/vouchers/'.$voucher['public_id'])
             ->assertOk()
@@ -493,6 +535,78 @@ class MobileApiTest extends TestCase
         $this->withToken($token)
             ->getJson('/api/v1/subscriptions/requests')
             ->assertForbidden();
+    }
+
+    public function test_voucher_stats_period_filters_vouchers_and_revenue(): void
+    {
+        $this->travelTo(Carbon::parse('2026-11-28 12:00:00'));
+
+        $agent = User::factory()->create();
+        $agent->assignRole('sales-agent');
+        $this->grantSubscription($agent);
+
+        $router = Router::factory()->create();
+        $agent->routers()->attach($router);
+
+        $plan = Plan::factory()->create([
+            'router_id' => $router->id,
+            'price' => 1500,
+            'currency' => 'NGN',
+            'is_active' => true,
+        ]);
+
+        foreach (['2026-11-28 09:00:00', '2026-11-25 09:00:00', '2026-11-05 09:00:00', '2026-10-01 09:00:00'] as $date) {
+            Voucher::factory()->create([
+                'router_id' => $router->id,
+                'plan_id' => $plan->id,
+                'provisioning_status' => 'provisioned',
+                'lifecycle_status' => 'active',
+                'created_at' => Carbon::parse($date),
+            ]);
+        }
+
+        Voucher::factory()->create([
+            'router_id' => $router->id,
+            'plan_id' => $plan->id,
+            'provisioning_status' => 'failed',
+            'created_at' => Carbon::parse('2026-11-28 10:00:00'),
+        ]);
+
+        $token = $agent->createToken('phpunit', ['*'])->plainTextToken;
+
+        $this->withToken($token)
+            ->getJson('/api/v1/vouchers/stats?period=today')
+            ->assertOk()
+            ->assertJsonPath('data.period', 'today')
+            ->assertJsonPath('data.total', 2)
+            ->assertJsonPath('data.revenue.total_amount', 1500)
+            ->assertJsonPath('data.revenue.voucher_count', 1);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/vouchers/stats?period=week')
+            ->assertOk()
+            ->assertJsonPath('data.period', 'week')
+            ->assertJsonPath('data.total', 3)
+            ->assertJsonPath('data.revenue.total_amount', 3000)
+            ->assertJsonPath('data.revenue.voucher_count', 2);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/vouchers/stats?period=month')
+            ->assertOk()
+            ->assertJsonPath('data.period', 'month')
+            ->assertJsonPath('data.total', 4)
+            ->assertJsonPath('data.revenue.total_amount', 4500)
+            ->assertJsonPath('data.revenue.voucher_count', 3);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/vouchers/stats?period=all')
+            ->assertOk()
+            ->assertJsonPath('data.period', 'all')
+            ->assertJsonPath('data.total', 5)
+            ->assertJsonPath('data.revenue.total_amount', 6000)
+            ->assertJsonPath('data.revenue.voucher_count', 4);
+
+        $this->travelBack();
     }
 
     public function test_voucher_generation_show_live_usage_and_unsupported_fields(): void

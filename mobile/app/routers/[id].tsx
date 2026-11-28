@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { Zap } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
@@ -61,18 +62,19 @@ export default function RouterDetailScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader
-        back
-        title={router?.name ?? 'Router'}
-        subtitle={router?.identity ?? 'RouterOS device'}
-        action={
-          meta?.can_test && canTestRouters(user) ? (
-            <Button label="Test" compact loading={test.pending} onPress={() => setConfirmTestOpen(true)} />
-          ) : null
-        }
-      />
-
+    <Screen
+      header={
+        <PageHeader
+          back
+          title={router?.name ?? 'Router'}
+          subtitle={router?.identity ?? 'RouterOS device'}
+          action={
+            meta?.can_test && canTestRouters(user) ? (
+              <Button label="Test" icon={Zap} iconOnly compact loading={test.pending} onPress={() => setConfirmTestOpen(true)} />
+            ) : null
+          }
+        />
+      }>
       {notice ? (
         <Card>
           <InfoRow label="Result" value={notice} />

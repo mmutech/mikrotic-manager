@@ -31,10 +31,16 @@
         {
           "image": "./assets/images/splash-icon.png",
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#F4F6FB"
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "@ricka7x/expo-thermal-printer",
+        {
+          "bluetoothPermission": "MMU Tech uses Bluetooth to print Wi-Fi vouchers on a thermal receipt printer."
+        }
+      ]
     ]
   }
 }

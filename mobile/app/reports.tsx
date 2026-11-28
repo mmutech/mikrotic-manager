@@ -60,8 +60,7 @@ export default function ReportsScreen() {
   if (!allowed) return null;
 
   return (
-    <Screen>
-      <PageHeader title="Reports" subtitle="Permission-scoped operational reporting" back />
+    <Screen header={<PageHeader title="Reports" subtitle="Permission-scoped operational reporting" back />}>
       <SelectChips options={TABS} value={tab} onChange={(value) => value && setTab(value)} />
 
       {resource.loading && !result ? <LoadingState label="Loading report…" /> : null}
@@ -81,11 +80,11 @@ function VoucherReport({ data }: { data: ReportData['vouchers'] }) {
       <Section title="Voucher summary">
         <Card>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-            <StatTile label="Total" value={data.total} />
-            <StatTile label="Active" value={data.active} tone="success" />
-            <StatTile label="Provisioned" value={data.provisioned} />
-            <StatTile label="Failed" value={data.provisioning_failed} tone="danger" />
-            <StatTile label="Expiring 7d" value={data.expiring_in_7_days} tone="warning" />
+            <StatTile label="Total" value={data.total} compact />
+            <StatTile label="Active" value={data.active} tone="success" compact />
+            <StatTile label="Provisioned" value={data.provisioned} compact />
+            <StatTile label="Failed" value={data.provisioning_failed} tone="danger" compact />
+            <StatTile label="Expiring 7d" value={data.expiring_in_7_days} tone="warning" compact />
           </View>
         </Card>
       </Section>
@@ -139,10 +138,10 @@ function RouterReport({ data }: { data: ReportData['routers'] }) {
       <Section title="Router summary">
         <Card>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-            <StatTile label="Total" value={data.total} />
-            <StatTile label="Online" value={data.online} tone="success" />
-            <StatTile label="Attention" value={data.needs_attention} tone="danger" />
-            <StatTile label="Pending jobs" value={data.pending_jobs} tone="warning" />
+            <StatTile label="Total" value={data.total} compact />
+            <StatTile label="Online" value={data.online} tone="success" compact />
+            <StatTile label="Attention" value={data.needs_attention} tone="danger" compact />
+            <StatTile label="Pending jobs" value={data.pending_jobs} tone="warning" compact />
           </View>
         </Card>
       </Section>
@@ -163,12 +162,12 @@ function SubscriptionReportView({ data }: { data: ReportData['subscriptions'] })
       <Section title="Subscription summary">
         <Card>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-            <StatTile label="Total" value={data.total} />
-            <StatTile label="Monthly" value={data.by_type.monthly ?? 0} />
-            <StatTile label="Yearly" value={data.by_type.yearly ?? 0} />
-            <StatTile label="Active" value={data.active} tone="success" />
-            <StatTile label="Expiring 7d" value={data.expiring_in_7_days} tone="warning" />
-            <StatTile label="No subscription" value={data.subscribers_without_active_subscription} tone="danger" />
+            <StatTile label="Total" value={data.total} compact />
+            <StatTile label="Monthly" value={data.by_type.monthly ?? 0} compact />
+            <StatTile label="Yearly" value={data.by_type.yearly ?? 0} compact />
+            <StatTile label="Active" value={data.active} tone="success" compact />
+            <StatTile label="Expiring 7d" value={data.expiring_in_7_days} tone="warning" compact />
+            <StatTile label="No subscription" value={data.subscribers_without_active_subscription} tone="danger" compact />
           </View>
         </Card>
       </Section>

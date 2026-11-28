@@ -31,7 +31,7 @@ export default function AccountScreen() {
 
   const subscription = useResource(() => api.subscription.mine(), []);
   const admins = useResource(
-    async () => (isAdmin ? api.subscription.index({ per_page: 100 }) : null),
+    async () => (isAdmin ? api.subscription.index({ per_page: 10 }) : null),
     [isAdmin],
   );
 
@@ -66,9 +66,7 @@ export default function AccountScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader title={roleLabel(user)} subtitle={user?.email ?? 'Signed in'} />
-
+    <Screen header={<PageHeader back title={roleLabel(user)} subtitle={user?.email ?? 'Signed in'} />}>
       {notice ? (
         <Card>
           <InfoRow label="Result" value={notice} />
@@ -82,6 +80,16 @@ export default function AccountScreen() {
           <InfoRow label="Phone" value={user?.phone ?? '—'} />
           <InfoRow label="Status" value={<Badge label={user?.status ?? 'active'} tone={statusTone(user?.status)} />} />
           <InfoRow label="Roles" value={user?.roles.join(', ') || '—'} />
+        </Card>
+      </Section>
+
+      <Section title="Printing">
+        <Card>
+          <ListRow
+            title="Bluetooth printer"
+            subtitle="Select a printer and paper width for voucher printing"
+            onPress={() => router.push('/printer-settings')}
+          />
         </Card>
       </Section>
 

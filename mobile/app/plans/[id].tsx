@@ -1,4 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Pencil } from 'lucide-react-native';
 import { Alert, View } from 'react-native';
 
 import { api } from '@/src/api/endpoints';
@@ -43,18 +44,19 @@ export default function PlanDetailScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader
-        back
-        title={plan?.name ?? 'Plan'}
-        subtitle={plan?.code ?? 'HotSpot plan'}
-        action={
-          canManagePlans(user) ? (
-            <Button label="Edit" compact variant="secondary" onPress={() => router.push(`/plans/${id}/edit`)} />
-          ) : null
-        }
-      />
-
+    <Screen
+      header={
+        <PageHeader
+          back
+          title={plan?.name ?? 'Plan'}
+          subtitle={plan?.code ?? 'HotSpot plan'}
+          action={
+            canManagePlans(user) ? (
+              <Button label="Edit" icon={Pencil} iconOnly compact variant="secondary" onPress={() => router.push(`/plans/${id}/edit`)} />
+            ) : null
+          }
+        />
+      }>
       {resource.loading && !plan ? <LoadingState label="Loading plan…" /> : null}
       {resource.error ? <ErrorState message={resource.error.message} onRetry={() => void resource.reload()} /> : null}
 

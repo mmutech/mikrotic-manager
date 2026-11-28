@@ -23,9 +23,7 @@ export default function RouterStatusScreen() {
   if (!allowed) return null;
 
   return (
-    <Screen>
-      <PageHeader title="Router status" subtitle="Visibility-scoped monitoring summary" back />
-
+    <Screen header={<PageHeader title="Router status" subtitle="Visibility-scoped monitoring summary" back />}>
       {resource.loading && !report ? <LoadingState label="Loading router status…" /> : null}
       {resource.error ? <ErrorState message={resource.error.message} onRetry={() => void resource.reload()} /> : null}
 
@@ -34,10 +32,10 @@ export default function RouterStatusScreen() {
           <Section title="Summary">
             <Card>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-                <StatTile label="Total" value={report.total} />
-                <StatTile label="Online" value={report.online} tone="success" />
-                <StatTile label="Attention" value={report.needs_attention} tone="danger" />
-                <StatTile label="Pending jobs" value={report.pending_jobs} tone="warning" />
+                <StatTile label="Total" value={report.total} compact />
+                <StatTile label="Online" value={report.online} tone="success" compact />
+                <StatTile label="Attention" value={report.needs_attention} tone="danger" compact />
+                <StatTile label="Pending jobs" value={report.pending_jobs} tone="warning" compact />
               </View>
             </Card>
           </Section>

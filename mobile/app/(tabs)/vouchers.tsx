@@ -1,5 +1,6 @@
 import { useRouter } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Plus, Printer } from 'lucide-react-native';
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/src/api/endpoints';
@@ -9,9 +10,7 @@ import {
   Card,
   ConfirmModal,
   EmptyState,
-  ErrorState,
   InfoRow,
-  LoadingState,
   PageHeader,
   Screen,
   Section,
@@ -19,7 +18,9 @@ import {
   StatTile,
   TextField,
 } from '@/src/components/ui';
+import { PaginatedList } from '@/src/components/PaginatedList';
 import { useAction } from '@/src/hooks/useAction';
+import { usePaginatedResource } from '@/src/hooks/usePaginatedResource';
 import { useResource } from '@/src/hooks/useResource';
 import { formatBytes, statusTone } from '@/src/format';
 import { printVouchers } from '@/src/print/vouchers';
@@ -60,7 +61,7 @@ export default function VouchersScreen() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [lifecycle, setLifecycle] = useState('');
-  const [selected, setSelected] = useState<Identifier[]>([]);
+  const [selectedItems, setSelectedItems] = useState<Voucher[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{
     kind: 'provision' | 'revoke';
@@ -69,13 +70,14 @@ export default function VouchersScreen() {
     skipped: number;
   } | null>(null);
 
-  const resource = useResource(
-    () => api.vouchers.list({
+  const list = usePaginatedResource(
+    (params) => api.vouchers.list({
       search: search || undefined,
       lifecycle: lifecycle || undefined,
-      per_page: 50,
+      ...params,
     }),
     [search, lifecycle],
+    { perPage: 10, getKey: voucherIdentifier },
   );
   const stats = useResource(() => api.vouchers.stats(), []);
 
@@ -86,37 +88,37 @@ export default function VouchersScreen() {
   }, [searchInput]);
 
   useEffect(() => {
-    setSelected([]);
+    setSelectedItems([]);
     setNotice(null);
   }, [search, lifecycle]);
 
   const selectedSet = useMemo(
-    () => new Set(selected.map((item) => String(item))),
-    [selected],
-  );
-  const selectedVouchers = useMemo(
-    () => (resource.data?.items ?? []).filter((voucher) => selectedSet.has(String(voucherIdentifier(voucher)))),
-    [resource.data, selectedSet],
+    () => new Set(selectedItems.map((item) => String(voucherIdentifier(item)))),
+    [selectedItems],
   );
   const printable = useMemo(
-    () => selectedVouchers.filter((voucher) => voucher.actions?.print !== false),
-    [selectedVouchers],
+    () => selectedItems.filter((voucher) => voucher.actions?.print !== false),
+    [selectedItems],
   );
-  const provisionable = useMemo(() => selectedVouchers.filter(canProvision), [selectedVouchers]);
-  const revocable = useMemo(() => selectedVouchers.filter(canRevoke), [selectedVouchers]);
+  const provisionable = useMemo(() => selectedItems.filter(canProvision), [selectedItems]);
+  const revocable = useMemo(() => selectedItems.filter(canRevoke), [selectedItems]);
 
+  const reloadList = useAction(async () => {
+    await list.reload();
+    await stats.reload();
+  });
   const bulkProvision = useAction(async (ids: Identifier[]) => {
     const result = await api.vouchers.provisionBulk(ids);
-    await resource.reload();
+    await reloadList.run();
     return result;
   });
   const bulkRevoke = useAction(async (ids: Identifier[]) => {
     const result = await api.vouchers.revokeBulk(ids);
-    await resource.reload();
+    await reloadList.run();
     return result;
   });
   const print = useAction(async (items: Voucher[]) => {
-    await printVouchers(items);
+    return await printVouchers(items);
   });
 
   function printSelected(): void {
@@ -126,21 +128,23 @@ export default function VouchersScreen() {
     }
 
     void print.run(printable).then((result) => {
-      if (result === null) {
-        setNotice('The voucher sheet could not be generated.');
-      }
+      setNotice(result ? result.note ?? `${result.count} voucher(s) printed.` : 'The voucher sheet could not be generated.');
     });
   }
 
-  function toggle(id: Identifier): void {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+  function toggle(voucher: Voucher): void {
+    const id = voucherIdentifier(voucher);
+
+    setSelectedItems((current) =>
+      current.some((item) => String(voucherIdentifier(item)) === String(id))
+        ? current.filter((item) => String(voucherIdentifier(item)) !== String(id))
+        : [...current, voucher],
     );
   }
 
   function confirmBulk(kind: 'provision' | 'revoke'): void {
     const eligible = kind === 'provision' ? provisionable : revocable;
-    const skipped = selected.length - eligible.length;
+    const skipped = selectedItems.length - eligible.length;
 
     if (eligible.length === 0) {
       setNotice(`No selected vouchers are eligible for ${kind === 'provision' ? 'provisioning' : 'revocation'}.`);
@@ -164,7 +168,7 @@ export default function VouchersScreen() {
     setConfirmation(null);
 
     if (result) {
-      setSelected([]);
+      setSelectedItems([]);
       setNotice(`${result.queued} queued, ${result.skipped} skipped.`);
     } else {
       setNotice(`The ${kind} request could not be completed.`);
@@ -172,70 +176,102 @@ export default function VouchersScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader
-        title="Vouchers"
-        subtitle="Generate, provision, monitor, and revoke HotSpot vouchers"
-        action={<Button label="Generate" compact onPress={() => router.push('/vouchers/generate')} />}
+    <Screen
+      scroll={false}
+      contentStyle={{ flex: 1, paddingBottom: 0 }}
+      header={
+        <PageHeader
+          back
+          title="Vouchers"
+          subtitle="Generate, provision, monitor, and revoke HotSpot vouchers"
+          action={
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              {/* <Button
+                label="Printer settings"
+                icon={Printer}
+                iconOnly
+                compact
+                onPress={() => router.push('/printer-settings')}
+              /> */}
+              <Button
+                label="Generate"
+                icon={Plus}
+                iconOnly
+                compact
+                onPress={() => router.push('/vouchers/generate')}
+              />
+            </View>
+          }
+        />
+      }>
+      <PaginatedList
+        items={list.items}
+        keyExtractor={(item) => String(voucherIdentifier(item))}
+        renderItem={({ item, index }) => (
+          <VoucherRow
+            voucher={item}
+            checked={selectedSet.has(String(voucherIdentifier(item)))}
+            onToggle={() => toggle(item)}
+            onOpen={() => router.push(`/vouchers/${item.public_id ?? item.id}`)}
+            style={[
+              styles.cardRow,
+              index === 0 ? styles.firstRow : null,
+              index === list.items.length - 1 ? styles.lastRow : null,
+            ]}
+          />
+        )}
+        loading={list.loading}
+        loadingMore={list.loadingMore}
+        error={list.error}
+        loadMoreError={list.loadMoreError}
+        hasMore={list.hasMore}
+        onLoadMore={list.loadMore}
+        onReload={list.reload}
+        loadingLabel="Loading vouchers…"
+        ListEmptyComponent={<EmptyState title="No vouchers found" message="Generate vouchers or adjust the filters." />}
+        ListHeaderComponent={
+          <>
+            {notice ? (
+              <Card>
+                <InfoRow label="Result" value={notice} />
+              </Card>
+            ) : null}
+
+            {stats.data ? (
+              <Section title="Voucher stats">
+                <Card>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                    <StatTile label="Total" value={stats.data.total} compact />
+                    <StatTile label="Active" value={stats.data.active} tone="success" compact />
+                    <StatTile label="Pending" value={stats.data.pending} tone="warning" compact />
+                    <StatTile label="Failed" value={stats.data.provisioning_failed} tone="danger" compact />
+                    <StatTile label="Data used" value={formatBytes(stats.data.data_used_bytes)} compact />
+                  </View>
+                </Card>
+              </Section>
+            ) : null}
+
+            <TextField label="Search username" value={searchInput} onChangeText={setSearchInput} autoCapitalize="none" />
+            <SelectChips options={LIFECYCLE_OPTIONS} value={lifecycle} onChange={(value) => setLifecycle(value ?? '')} />
+
+            {selectedItems.length > 0 ? (
+              <Section title={`${selectedItems.length} selected`}>
+                <Card>
+                  <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
+                    <Button label="Provision" compact loading={bulkProvision.pending} disabled={provisionable.length === 0} onPress={() => confirmBulk('provision')} />
+                    <Button label="Revoke" compact variant="danger" loading={bulkRevoke.pending} disabled={revocable.length === 0} onPress={() => confirmBulk('revoke')} />
+                    <Button label="Print" compact variant="secondary" loading={print.pending} disabled={printable.length === 0} onPress={printSelected} />
+                  </View>
+                </Card>
+              </Section>
+            ) : null}
+
+            <View style={styles.listHeading}>
+              <Text style={styles.listHeadingText}>Vouchers</Text>
+            </View>
+          </>
+        }
       />
-
-      {notice ? (
-        <Card>
-          <InfoRow label="Result" value={notice} />
-        </Card>
-      ) : null}
-
-      {stats.data ? (
-        <Section title="Voucher stats">
-          <Card>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-              <StatTile label="Total" value={stats.data.total} />
-              <StatTile label="Active" value={stats.data.active} tone="success" />
-              <StatTile label="Pending" value={stats.data.pending} tone="warning" />
-              <StatTile label="Failed" value={stats.data.provisioning_failed} tone="danger" />
-              <StatTile label="Data used" value={formatBytes(stats.data.data_used_bytes)} />
-            </View>
-          </Card>
-        </Section>
-      ) : null}
-
-      <TextField label="Search username" value={searchInput} onChangeText={setSearchInput} autoCapitalize="none" />
-      <SelectChips options={LIFECYCLE_OPTIONS} value={lifecycle} onChange={(value) => setLifecycle(value ?? '')} />
-
-      {selected.length > 0 ? (
-        <Section title={`${selected.length} selected`}>
-          <Card>
-            <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-              <Button label="Provision" compact loading={bulkProvision.pending} disabled={provisionable.length === 0} onPress={() => confirmBulk('provision')} />
-              <Button label="Revoke" compact variant="danger" loading={bulkRevoke.pending} disabled={revocable.length === 0} onPress={() => confirmBulk('revoke')} />
-              <Button label="Print" compact variant="secondary" loading={print.pending} disabled={printable.length === 0} onPress={printSelected} />
-            </View>
-          </Card>
-        </Section>
-      ) : null}
-
-      {resource.loading && !resource.data ? <LoadingState label="Loading vouchers…" /> : null}
-      {resource.error ? <ErrorState message={resource.error.message} onRetry={() => void resource.reload()} /> : null}
-
-      {resource.data ? (
-        <Section title="Vouchers">
-          <Card>
-            {resource.data.items.length === 0 ? (
-              <EmptyState title="No vouchers found" message="Generate vouchers or adjust the filters." />
-            ) : (
-              resource.data.items.map((voucher) => (
-                <VoucherRow
-                  key={String(voucher.id)}
-                  voucher={voucher}
-                  checked={selectedSet.has(String(voucherIdentifier(voucher)))}
-                  onToggle={() => toggle(voucherIdentifier(voucher))}
-                  onOpen={() => router.push(`/vouchers/${voucher.public_id ?? voucher.id}`)}
-                />
-              ))
-            )}
-          </Card>
-        </Section>
-      ) : null}
 
       <ConfirmModal
         visible={confirmation !== null}
@@ -260,14 +296,16 @@ function VoucherRow({
   checked,
   onToggle,
   onOpen,
+  style,
 }: {
   voucher: Voucher;
   checked: boolean;
   onToggle: () => void;
   onOpen: () => void;
+  style?: StyleProp<ViewStyle>;
 }) {
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, style]}>
       <Pressable
         onPress={onToggle}
         accessibilityRole="checkbox"
@@ -279,45 +317,71 @@ function VoucherRow({
       <Pressable onPress={onOpen} style={styles.rowBody}>
         <View style={styles.rowHeading}>
           <Text style={styles.rowTitle}>{voucher.username}</Text>
-          <View style={styles.rowBadges}>
-            <Badge
-              label={voucher.lifecycle_label ?? voucher.lifecycle_status ?? '—'}
-              tone={statusTone(voucher.lifecycle_status)}
-            />
-            <Badge
-              label={voucher.provisioning_label ?? voucher.provisioning_status ?? '—'}
-              tone={statusTone(voucher.provisioning_status)}
-            />
-          </View>
+          <Text style={styles.rowSubtitle}>
+            {voucher.plan_name ?? voucher.hotspot_profile ?? 'No plan'} · {formatBytes(voucher.used_bytes ?? 0)} used
+          </Text>
         </View>
-        <Text style={styles.rowSubtitle}>
-          {voucher.plan_name ?? voucher.hotspot_profile ?? 'No plan'} · {formatBytes(voucher.used_bytes ?? 0)} used
-        </Text>
         <Text style={styles.rowUsage}>
           Connected {voucher.connected_time ?? '—'} · Consumption {voucher.consumption ?? '—'}
         </Text>
+        <View style={styles.rowBadges}>
+          <Badge
+            label={voucher.lifecycle_label ?? voucher.lifecycle_status ?? '—'}
+            tone={statusTone(voucher.lifecycle_status)}
+          />
+          <Badge
+            label={voucher.provisioning_label ?? voucher.provisioning_status ?? '—'}
+            tone={statusTone(voucher.provisioning_status)}
+          />
+        </View>
       </Pressable>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  listHeading: {
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.sm,
+  },
+  listHeadingText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.colors.text,
+  },
+  cardRow: {
+    backgroundColor: theme.colors.surface,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  firstRow: {
+    borderTopWidth: 1,
+    borderTopLeftRadius: theme.radius.md,
+    borderTopRightRadius: theme.radius.md,
+  },
+  lastRow: {
+    borderBottomWidth: 0,
+    borderBottomLeftRadius: theme.radius.md,
+    borderBottomRightRadius: theme.radius.md,
+  },
   row: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   checkbox: {
-    width: 22,
-    height: 22,
-    marginTop: 2,
+    width: 20,
+    height: 20,
     borderRadius: theme.radius.sm,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -332,30 +396,35 @@ const styles = StyleSheet.create({
   },
   rowBody: {
     flex: 1,
+    minWidth: 0,
     gap: 4,
   },
   rowHeading: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: 6,
   },
   rowTitle: {
     flex: 1,
-    fontSize: 15,
+    minWidth: 0,
+    fontSize: 14,
     fontWeight: '700',
     color: theme.colors.text,
   },
   rowBadges: {
-    alignItems: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 4,
+    marginTop: 3,
   },
   rowSubtitle: {
-    fontSize: 13,
+    fontSize: 12,
     color: theme.colors.muted,
   },
   rowUsage: {
-    fontSize: 12,
+    fontSize: 11,
     color: theme.colors.primary,
   },
 });

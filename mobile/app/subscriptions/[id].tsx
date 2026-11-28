@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { Alert, View } from 'react-native';
 import { useEffect, useState } from 'react';
 
@@ -26,7 +26,6 @@ import { formatDate, formatMoney, statusTone } from '@/src/format';
 export default function SubscriptionDetailScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const id = String(params.id ?? '');
-  const router = useRouter();
   const { user } = useAuth();
   const resource = useResource(() => api.subscription.show(id), [id]);
   const plans = useResource(() => api.subscription.plans(), []);
@@ -91,13 +90,14 @@ export default function SubscriptionDetailScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader
-        title={admin?.name ?? 'Subscription'}
-        subtitle={admin?.email ?? 'Network administrator'}
-        action={<Button label="Done" compact variant="secondary" onPress={() => router.back()} />}
-      />
-
+    <Screen
+      header={
+        <PageHeader
+          back
+          title={admin?.name ?? 'Subscription'}
+          subtitle={admin?.email ?? 'Network administrator'}
+        />
+      }>
       {resource.loading && !admin ? <LoadingState label="Loading subscription…" /> : null}
       {resource.error ? <ErrorState message={resource.error.message} onRetry={() => void resource.reload()} /> : null}
 

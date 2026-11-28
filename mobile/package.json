@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "dependencies": {
+    "@ricka7x/expo-thermal-printer": "^0.1.3",
     "expo": "~58.1.0",
     "expo-constants": "~58.0.16",
     "expo-font": "~58.0.12",

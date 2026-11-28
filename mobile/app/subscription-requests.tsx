@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useEffect, useState } from 'react';
 
 import { api } from '@/src/api/endpoints';
@@ -11,16 +11,14 @@ import {
   Card,
   ConfirmModal,
   EmptyState,
-  ErrorState,
   InfoRow,
-  LoadingState,
   PageHeader,
   Screen,
-  Section,
   SelectChips,
 } from '@/src/components/ui';
+import { PaginatedList } from '@/src/components/PaginatedList';
 import { useAction } from '@/src/hooks/useAction';
-import { useResource } from '@/src/hooks/useResource';
+import { usePaginatedResource } from '@/src/hooks/usePaginatedResource';
 import { formatDate, formatMoney, statusTone } from '@/src/format';
 import { theme } from '@/src/theme';
 import type { Identifier, SubscriptionRequest } from '@/src/types';
@@ -46,17 +44,21 @@ export default function SubscriptionRequestsScreen() {
     if (!allowed) router.replace('/(tabs)/account');
   }, [allowed, router]);
 
-  const resource = useResource(() => api.subscription.requests({ status, per_page: 50 }), [status]);
+  const list = usePaginatedResource(
+    (params) => api.subscription.requests({ status, ...params }),
+    [status],
+    { perPage: 10, getKey: (item) => item.id },
+  );
 
   const approve = useAction(async (id: Identifier) => {
     const result = await api.subscription.approve(id);
-    await resource.reload();
+    await list.reload();
     return result;
   });
 
   const reject = useAction(async (id: Identifier) => {
     const result = await api.subscription.reject(id);
-    await resource.reload();
+    await list.reload();
     return result;
   });
 
@@ -81,51 +83,67 @@ export default function SubscriptionRequestsScreen() {
   const busy = approve.pending || reject.pending;
 
   return (
-    <Screen>
-      <PageHeader
-        title="Subscription requests"
-        subtitle="Review, approve, or reject access requests"
-        back
-      />
+    <Screen
+      scroll={false}
+      contentStyle={{ flex: 1, paddingBottom: 0 }}
+      header={
+        <PageHeader
+          title="Subscription requests"
+          subtitle="Review, approve, or reject access requests"
+          back
+        />
+      }>
+      <PaginatedList
+        items={list.items}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={({ item, index }) => (
+          <RequestRow
+            item={item}
+            busy={busy}
+            showActions={status === 'pending'}
+            onApprove={() => setConfirmation({ kind: 'approve', item })}
+            onReject={() => setConfirmation({ kind: 'reject', item })}
+            style={[
+              styles.cardRow,
+              index === 0 ? styles.firstRow : null,
+              index === list.items.length - 1 ? styles.lastRow : null,
+            ]}
+          />
+        )}
+        loading={list.loading}
+        loadingMore={list.loadingMore}
+        error={list.error}
+        loadMoreError={list.loadMoreError}
+        hasMore={list.hasMore}
+        onLoadMore={list.loadMore}
+        onReload={list.reload}
+        loadingLabel="Loading requests…"
+        ListEmptyComponent={
+          <EmptyState
+            title={`No ${status} requests`}
+            message="Requests submitted by network administrators or sales agents will appear here."
+          />
+        }
+        ListHeaderComponent={
+          <>
+            {notice ? (
+              <Card>
+                <InfoRow label="Result" value={notice} />
+              </Card>
+            ) : null}
 
-      {notice ? (
-        <Card>
-          <InfoRow label="Result" value={notice} />
-        </Card>
-      ) : null}
-
-      <SelectChips
-        options={STATUS_OPTIONS}
-        value={status}
-        onChange={(value) => setStatus(value ?? 'pending')}
-      />
-
-      {resource.loading && !resource.data ? <LoadingState label="Loading requests…" /> : null}
-      {resource.error ? (
-        <ErrorState message={resource.error.message} onRetry={() => void resource.reload()} />
-      ) : null}
-
-      <Section title={`${status[0].toUpperCase()}${status.slice(1)} requests`}>
-        <Card>
-          {resource.data?.items.length ? (
-            resource.data.items.map((item) => (
-              <RequestRow
-                key={String(item.id)}
-                item={item}
-                busy={busy}
-                showActions={status === 'pending'}
-                onApprove={() => setConfirmation({ kind: 'approve', item })}
-                onReject={() => setConfirmation({ kind: 'reject', item })}
-              />
-            ))
-          ) : resource.data ? (
-            <EmptyState
-              title={`No ${status} requests`}
-              message="Requests submitted by network administrators or sales agents will appear here."
+            <SelectChips
+              options={STATUS_OPTIONS}
+              value={status}
+              onChange={(value) => setStatus(value ?? 'pending')}
             />
-          ) : null}
-        </Card>
-      </Section>
+
+            <View style={styles.listHeading}>
+              <Text style={styles.listHeadingText}>{`${status[0].toUpperCase()}${status.slice(1)} requests`}</Text>
+            </View>
+          </>
+        }
+      />
 
       <ConfirmModal
         visible={confirmation !== null}
@@ -151,15 +169,17 @@ function RequestRow({
   showActions,
   onApprove,
   onReject,
+  style,
 }: {
   item: SubscriptionRequest;
   busy: boolean;
   showActions: boolean;
   onApprove: () => void;
   onReject: () => void;
+  style?: StyleProp<ViewStyle>;
 }) {
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, style]}>
       <View style={styles.rowHeading}>
         <View style={styles.rowText}>
           <Text style={styles.rowTitle}>{item.name}</Text>
@@ -189,13 +209,40 @@ function RequestRow({
 }
 
 const styles = StyleSheet.create({
+  listHeading: {
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.sm,
+  },
+  listHeadingText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.colors.text,
+  },
+  cardRow: {
+    backgroundColor: theme.colors.surface,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  firstRow: {
+    borderTopWidth: 1,
+    borderTopLeftRadius: theme.radius.md,
+    borderTopRightRadius: theme.radius.md,
+  },
+  lastRow: {
+    borderBottomLeftRadius: theme.radius.md,
+    borderBottomRightRadius: theme.radius.md,
+  },
   row: {
     paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   rowHeading: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
@@ -203,6 +250,7 @@ const styles = StyleSheet.create({
   },
   rowText: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   rowTitle: {
@@ -216,6 +264,7 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: theme.spacing.sm,
     marginTop: theme.spacing.sm,
   },

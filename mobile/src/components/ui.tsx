@@ -1,53 +1,231 @@
-import { useRouter } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { ChevronLeft, type LucideIcon } from 'lucide-react-native';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  PanResponder,
+  Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   View,
-  type RefreshControlProps,
   type StyleProp,
   type TextInputProps,
   type ViewStyle,
 } from 'react-native';
-import { useState, type ReactElement, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { theme } from '@/src/theme';
 import { humanize } from '@/src/format';
+import { useRefresh } from '@/src/hooks/useRefresh';
+import { useResponsive } from '@/src/hooks/useResponsive';
 
 type Tone = 'success' | 'warning' | 'danger' | 'neutral';
+type RouterHref = Parameters<ReturnType<typeof useRouter>['push']>[0];
+
+const TAB_ROUTES: Array<{ path: string; href: RouterHref }> = [
+  { path: '/', href: '/(tabs)' },
+  { path: '/routers', href: '/(tabs)/routers' },
+  { path: '/vouchers', href: '/(tabs)/vouchers' },
+  { path: '/plans', href: '/(tabs)/plans' },
+  { path: '/account', href: '/(tabs)/account' },
+];
+const SWIPE_EDGE = 40;
+const SWIPE_DISTANCE = 60;
+const PULL_ZONE = 120;
+const PULL_DISTANCE = 80;
 
 export function Screen({
   children,
+  header,
   scroll = true,
-  refreshControl,
   contentStyle,
 }: {
   children: ReactNode;
+  header?: ReactNode;
   scroll?: boolean;
-  refreshControl?: ReactElement<RefreshControlProps>;
   contentStyle?: StyleProp<ViewStyle>;
 }) {
-  const content = <View style={[styles.screenContent, contentStyle]}>{children}</View>;
+  const router = useRouter();
+  const pathname = usePathname();
+  const { width, contentPadding, contentMaxWidth } = useResponsive();
+  const { refreshing, refreshAll } = useRefresh();
+  const scrollY = useRef(0);
+  const webPullToRefresh = Platform.OS === 'web';
+
+  const swipeHandlers = useMemo(() => {
+    const startsAtEdge = (x: number) => x <= SWIPE_EDGE || x >= width - SWIPE_EDGE;
+    const atTop = () => scrollY.current <= 0;
+
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_event, gesture) => {
+        const wantsHorizontal =
+          startsAtEdge(gesture.x0)
+          && Math.abs(gesture.dx) > 12
+          && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2;
+        const wantsPull =
+          webPullToRefresh
+          && atTop()
+          && gesture.y0 <= PULL_ZONE
+          && gesture.dy > 12
+          && gesture.dy > Math.abs(gesture.dx) * 1.2;
+
+        return wantsHorizontal || wantsPull;
+      },
+      onPanResponderTerminationRequest: () => true,
+      onPanResponderRelease: (_event, gesture) => {
+        const isPull =
+          webPullToRefresh
+          && atTop()
+          && gesture.y0 <= PULL_ZONE
+          && gesture.dy >= PULL_DISTANCE
+          && gesture.dy > Math.abs(gesture.dx);
+
+        if (isPull) {
+          void refreshAll();
+          return;
+        }
+
+        if (Math.abs(gesture.dx) < SWIPE_DISTANCE || Math.abs(gesture.dx) < Math.abs(gesture.dy)) {
+          return;
+        }
+
+        const tabIndex = TAB_ROUTES.findIndex(
+          (route) =>
+            route.path === pathname
+            || (route.path === '/' && (pathname === '/index' || pathname === '/(tabs)')),
+        );
+
+        if (tabIndex >= 0) {
+          const nextIndex =
+            gesture.dx < 0
+              ? (tabIndex + 1) % TAB_ROUTES.length
+              : (tabIndex - 1 + TAB_ROUTES.length) % TAB_ROUTES.length;
+
+          router.push(TAB_ROUTES[nextIndex].href);
+          return;
+        }
+
+        if (gesture.dx > 0 && gesture.x0 <= SWIPE_EDGE && router.canGoBack()) {
+          router.back();
+        }
+      },
+    }).panHandlers;
+  }, [pathname, refreshAll, router, webPullToRefresh, width]);
+
+  const content = (
+    <View
+      style={[
+        {
+          width: '100%',
+          maxWidth: contentMaxWidth,
+          alignSelf: 'center',
+          backgroundColor: theme.colors.background,
+          paddingHorizontal: contentPadding,
+          paddingTop: header ? theme.spacing.sm : 0,
+          paddingBottom: theme.spacing.xl,
+        },
+        contentStyle,
+      ]}>
+      {children}
+    </View>
+  );
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={() => void refreshAll()}
+      tintColor={theme.colors.primary}
+      colors={[theme.colors.primary]}
+    />
+  );
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
-      {scroll ? (
-        <ScrollView
-          refreshControl={refreshControl}
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled">
-          {content}
-        </ScrollView>
-      ) : (
-        content
-      )}
+    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']} {...swipeHandlers}>
+      {header ? (
+        <View
+          style={[
+            styles.fixedHeader,
+            {
+              width: '100%',
+              maxWidth: contentMaxWidth,
+              alignSelf: 'center',
+              paddingHorizontal: contentPadding,
+            },
+          ]}>
+          {header}
+        </View>
+      ) : null}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}>
+        {scroll ? (
+          <ScrollView
+            refreshControl={webPullToRefresh ? undefined : refreshControl}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            scrollEventThrottle={16}
+            onScroll={(event) => {
+              scrollY.current = event.nativeEvent.contentOffset.y;
+            }}>
+            {content}
+          </ScrollView>
+        ) : (
+          content
+        )}
+      </KeyboardAvoidingView>
+      {webPullToRefresh && refreshing ? (
+        <View style={styles.webRefreshOverlay} pointerEvents="none">
+          <View style={styles.webRefreshPill}>
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
+  );
+}
+
+export function Avatar({
+  name,
+  onPress,
+  size = 40,
+}: {
+  name?: string | null;
+  onPress?: () => void;
+  size?: number;
+}) {
+  const initials = useMemo(() => {
+    const parts = (name ?? '').trim().split(/\s+/).filter(Boolean);
+
+    if (parts.length === 0) return '?';
+    if (parts.length === 1) return (parts[0] ?? '').slice(0, 2).toUpperCase();
+
+    return `${(parts[0] ?? '').charAt(0)}${(parts[parts.length - 1] ?? '').charAt(0)}`.toUpperCase();
+  }, [name]);
+
+  const content = (
+    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
+      <Text style={styles.avatarText}>{initials}</Text>
+    </View>
+  );
+
+  if (!onPress) return content;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Open account"
+      style={({ pressed }) => [pressed ? styles.avatarPressed : null]}>
+      {content}
+    </Pressable>
   );
 }
 
@@ -55,11 +233,15 @@ export function PageHeader({
   title,
   subtitle,
   action,
+  avatar,
+  titleSize = 14,
   back = false,
 }: {
   title: string;
   subtitle?: string;
   action?: ReactNode;
+  avatar?: ReactNode;
+  titleSize?: number;
   back?: boolean;
 }) {
   const router = useRouter();
@@ -76,14 +258,21 @@ export function PageHeader({
             }
           }}
           accessibilityRole="button"
-          accessibilityLabel="Go back"
+          accessibilityLabel={`Back from ${title}`}
           style={styles.backButton}>
-          <Text style={styles.backButtonText}>‹ Back</Text>
+          <ChevronLeft size={26} color={theme.colors.primary} />
         </Pressable>
       ) : null}
+      {avatar}
       <View style={styles.pageHeaderText}>
-        <Text style={styles.pageTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.pageSubtitle}>{subtitle}</Text> : null}
+        <Text numberOfLines={1} style={[styles.pageTitle, { fontSize: titleSize }]}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text numberOfLines={1} style={styles.pageSubtitle}>
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
       {action}
     </View>
@@ -117,6 +306,8 @@ export function Section({
 export function Button({
   label,
   onPress,
+  icon: Icon,
+  iconOnly = false,
   variant = 'primary',
   loading = false,
   disabled = false,
@@ -125,6 +316,8 @@ export function Button({
 }: {
   label: string;
   onPress: () => void;
+  icon?: LucideIcon;
+  iconOnly?: boolean;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   loading?: boolean;
   disabled?: boolean;
@@ -139,11 +332,14 @@ export function Button({
   }[variant];
 
   const labelStyle = variant === 'primary' || variant === 'danger' ? styles.buttonLabelLight : styles.buttonLabelDark;
+  const iconColor = variant === 'primary' || variant === 'danger' ? theme.colors.white : theme.colors.primary;
 
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
+      accessibilityRole="button"
+      accessibilityLabel={label}
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
@@ -153,9 +349,18 @@ export function Button({
         style,
       ]}>
       {loading ? (
-        <ActivityIndicator color={variant === 'primary' || variant === 'danger' ? theme.colors.white : theme.colors.primary} size="small" />
+        <ActivityIndicator color={iconColor} size="small" />
       ) : (
-        <Text style={labelStyle}>{label}</Text>
+        <>
+          {Icon ? (
+            <Icon
+              size={iconOnly ? (compact ? 18 : 20) : compact ? 14 : 16}
+              color={iconColor}
+              style={iconOnly ? undefined : styles.buttonIcon}
+            />
+          ) : null}
+          {iconOnly ? null : <Text style={labelStyle}>{label}</Text>}
+        </>
       )}
     </Pressable>
   );
@@ -327,10 +532,18 @@ export function Badge({ label, tone }: { label?: string | null; tone?: Tone }) {
 }
 
 export function InfoRow({ label, value }: { label: string; value: ReactNode }) {
+  const { isSmall } = useResponsive();
+
   return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <View style={styles.infoValue}>{typeof value === 'string' ? <Text style={styles.infoValueText}>{value}</Text> : value}</View>
+    <View style={[styles.infoRow, isSmall ? styles.infoRowStacked : null]}>
+      <Text style={[styles.infoLabel, isSmall ? styles.infoLabelStacked : null]}>{label}</Text>
+      <View style={[styles.infoValue, isSmall ? styles.infoValueStacked : null]}>
+        {typeof value === 'string' ? (
+          <Text style={[styles.infoValueText, isSmall ? styles.infoValueTextStacked : null]}>{value}</Text>
+        ) : (
+          value
+        )}
+      </View>
     </View>
   );
 }
@@ -340,11 +553,13 @@ export function StatTile({
   value,
   caption,
   tone = 'primary',
+  compact = false,
 }: {
   label: string;
   value: ReactNode;
   caption?: string;
   tone?: 'primary' | 'success' | 'warning' | 'danger';
+  compact?: boolean;
 }) {
   const toneStyle = {
     primary: styles.statPrimary,
@@ -354,10 +569,10 @@ export function StatTile({
   }[tone];
 
   return (
-    <View style={[styles.statTile, toneStyle]}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-      {caption ? <Text style={styles.statCaption}>{caption}</Text> : null}
+    <View style={[styles.statTile, compact && styles.statTileCompact, toneStyle]}>
+      <Text style={[styles.statLabel, compact && styles.statLabelCompact]}>{label}</Text>
+      <Text style={[styles.statValue, compact && styles.statValueCompact]}>{value}</Text>
+      {caption ? <Text style={[styles.statCaption, compact && styles.statCaptionCompact]}>{caption}</Text> : null}
     </View>
   );
 }
@@ -367,30 +582,38 @@ export function ListRow({
   subtitle,
   trailing,
   onPress,
+  style,
 }: {
   title: string;
   subtitle?: string;
   trailing?: ReactNode;
   onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
 }) {
   const content = (
     <>
       <View style={styles.listRowText}>
-        <Text style={styles.listRowTitle}>{title}</Text>
-        {subtitle ? <Text style={styles.listRowSubtitle}>{subtitle}</Text> : null}
+        <Text numberOfLines={1} style={styles.listRowTitle}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text numberOfLines={1} style={styles.listRowSubtitle}>
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
       {trailing ?? <Text style={styles.chevron}>›</Text>}
     </>
   );
 
   if (!onPress) {
-    return <View style={styles.listRow}>{content}</View>;
+    return <View style={[styles.listRow, style]}>{content}</View>;
   }
 
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.listRow, pressed ? styles.listRowPressed : null]}>
+      style={({ pressed }) => [styles.listRow, pressed ? styles.listRowPressed : null, style]}>
       {content}
     </Pressable>
   );
@@ -484,46 +707,75 @@ export function CheckboxRow({
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.white,
   },
-  screenContent: {
-    width: '100%',
-    maxWidth: 760,
-    alignSelf: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: theme.spacing.xl,
+  keyboardAvoid: {
+    flex: 1,
+  },
+  fixedHeader: {
+    backgroundColor: theme.colors.white,
+    zIndex: 2,
+  },
+  webRefreshOverlay: {
+    position: 'absolute',
+    top: 8,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  webRefreshPill: {
+    minWidth: 48,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: theme.colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scrollContent: {
     flexGrow: 1,
+    backgroundColor: theme.colors.background,
+  },
+  avatar: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  avatarText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: theme.colors.primary,
+  },
+  avatarPressed: {
+    opacity: 0.7,
   },
   pageHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: theme.spacing.md,
-    paddingTop: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
+    gap: theme.spacing.xxs,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
   },
   backButton: {
-    paddingVertical: theme.spacing.xs,
-    paddingRight: theme.spacing.xs,
-  },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 15,
-    fontWeight: '700',
+    alignSelf: 'center',
+    marginLeft: -theme.spacing.xs,
   },
   pageHeaderText: {
     flex: 1,
+    minWidth: 0,
   },
   pageTitle: {
-    fontSize: 26,
+    fontSize: 14,
     fontWeight: '800',
     color: theme.colors.text,
   },
   pageSubtitle: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: 0.5,
+    fontSize: 11,
     color: theme.colors.muted,
   },
   section: {
@@ -531,8 +783,10 @@ const styles = StyleSheet.create({
   },
   sectionHeader: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: theme.spacing.xs,
     marginBottom: theme.spacing.sm,
   },
   sectionTitle: {
@@ -559,6 +813,9 @@ const styles = StyleSheet.create({
   buttonCompact: {
     minHeight: 36,
     paddingHorizontal: theme.spacing.sm,
+  },
+  buttonIcon: {
+    marginRight: 6,
   },
   buttonPrimary: { backgroundColor: theme.colors.primary },
   buttonSecondary: {
@@ -591,6 +848,7 @@ const styles = StyleSheet.create({
   modalActions: {
     marginTop: theme.spacing.lg,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
@@ -658,6 +916,10 @@ const styles = StyleSheet.create({
   infoLabel: { fontSize: 13, color: theme.colors.muted, flex: 1 },
   infoValue: { flex: 1, alignItems: 'flex-end' },
   infoValueText: { fontSize: 13, fontWeight: '600', color: theme.colors.text, textAlign: 'right' },
+  infoRowStacked: { flexDirection: 'column', alignItems: 'flex-start', gap: 4 },
+  infoLabelStacked: { flex: 0 },
+  infoValueStacked: { flex: 0, width: '100%', alignItems: 'flex-start' },
+  infoValueTextStacked: { textAlign: 'left' },
   statTile: {
     flex: 1,
     minWidth: 140,
@@ -665,6 +927,23 @@ const styles = StyleSheet.create({
     padding: theme.spacing.md,
     marginRight: theme.spacing.sm,
     borderWidth: 1,
+  },
+  statTileCompact: {
+    minWidth: 0,
+    flexBasis: 140,
+    padding: theme.spacing.sm,
+    marginRight: 0,
+  },
+  statLabelCompact: {
+    fontSize: 11,
+  },
+  statValueCompact: {
+    fontSize: 18,
+    marginTop: 3,
+  },
+  statCaptionCompact: {
+    fontSize: 10,
+    marginTop: 2,
   },
   statPrimary: { backgroundColor: theme.colors.primarySoft, borderColor: theme.colors.border },
   statSuccess: { backgroundColor: theme.colors.successSoft, borderColor: theme.colors.border },
@@ -683,7 +962,7 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.border,
   },
   listRowPressed: { backgroundColor: theme.colors.surfaceMuted },
-  listRowText: { flex: 1 },
+  listRowText: { flex: 1, minWidth: 0 },
   listRowTitle: { fontSize: 14, fontWeight: '700', color: theme.colors.text },
   listRowSubtitle: { fontSize: 12, color: theme.colors.muted, marginTop: 3 },
   chevron: { fontSize: 24, color: theme.colors.muted },

@@ -17,7 +17,14 @@ export function useAction<TArgs extends unknown[], TResult>(
         return await action(...args);
       } catch (caught) {
         setError(
-          caught instanceof ApiError ? caught : new ApiError(0, 'The action could not be completed.'),
+          caught instanceof ApiError
+            ? caught
+            : new ApiError(
+                0,
+                caught instanceof Error && caught.message
+                  ? caught.message
+                  : 'The action could not be completed.',
+              ),
         );
         return null;
       } finally {

@@ -77,7 +77,7 @@ export function PlanForm({
   );
   const [isActive, setIsActive] = useState(initialPlan?.is_active ?? true);
 
-  const routers = useResource(() => api.routers.list({ per_page: 100 }), []);
+  const routers = useResource(() => api.routers.list({ per_page: 10 }), []);
   const profiles = useResource(
     () => (routerId ? api.routers.hotspotProfiles(routerId).then((result) => result.profiles) : Promise.resolve([])),
     [routerId],
@@ -129,13 +129,14 @@ export function PlanForm({
   if (!allowed) return null;
 
   return (
-    <Screen>
-      <PageHeader
-        back
-        title={mode === 'create' ? 'New plan' : 'Edit plan'}
-        subtitle="Map a package to an existing RouterOS HotSpot profile"
-      />
-
+    <Screen
+      header={
+        <PageHeader
+          back
+          title={mode === 'create' ? 'New plan' : 'Edit plan'}
+          subtitle="Map a package to an existing RouterOS HotSpot profile"
+        />
+      }>
       <Section title="Router">
         {routers.loading && !routers.data ? <LoadingState label="Loading routers…" /> : null}
         {routers.error ? <ErrorState message={routers.error.message} onRetry={() => void routers.reload()} /> : null}

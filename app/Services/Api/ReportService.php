@@ -58,9 +58,9 @@ final class ReportService
     }
 
     /** @return array<string, mixed> */
-    public function voucherStats(User $user): array
+    public function voucherStats(User $user, string $period = 'all'): array
     {
-        $query = $this->vouchersQuery($user);
+        $query = $this->scopeVoucherPeriod($this->vouchersQuery($user), $period);
 
         $grouped = (clone $query)
             ->toBase()
@@ -89,6 +89,7 @@ final class ReportService
             ->all();
 
         return [
+            'period' => $period,
             'total' => (clone $query)->count(),
             'by_lifecycle' => $grouped,
             'active' => (int) ($grouped['active'] ?? 0),
@@ -108,6 +109,41 @@ final class ReportService
                 ->latest()
                 ->limit(5)
                 ->get(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function voucherRevenue(User $user, string $period = 'all'): array
+    {
+        $query = $this->scopeVoucherPeriod(
+            $this->vouchersQuery($user)
+                ->join('plans', 'plans.id', '=', 'vouchers.plan_id')
+                ->where('vouchers.provisioning_status', 'provisioned'),
+            $period,
+        );
+
+        $byCurrency = (clone $query)
+            ->toBase()
+            ->select(
+                'plans.currency',
+                DB::raw('COUNT(*) as total'),
+                DB::raw('COALESCE(SUM(plans.price), 0) as amount'),
+            )
+            ->groupBy('plans.currency')
+            ->orderByDesc('amount')
+            ->get()
+            ->map(fn ($row): array => [
+                'currency' => (string) $row->currency,
+                'vouchers' => (int) $row->total,
+                'amount' => (float) $row->amount,
+            ])
+            ->all();
+
+        return [
+            'period' => $period,
+            'total_amount' => (float) (clone $query)->sum('plans.price'),
+            'voucher_count' => (int) (clone $query)->count(),
+            'by_currency' => $byCurrency,
         ];
     }
 
@@ -339,10 +375,25 @@ final class ReportService
         return $query;
     }
 
+    private function scopeVoucherPeriod(Builder $query, string $period): Builder
+    {
+        if ($period === 'all') {
+            return $query;
+        }
+
+        [$start, $end] = match ($period) {
+            'week' => [now()->startOfWeek(), now()->endOfWeek()],
+            'month' => [now()->startOfMonth(), now()->endOfMonth()],
+            default => [now()->startOfDay(), now()->endOfDay()],
+        };
+
+        return $query->whereBetween('vouchers.created_at', [$start, $end]);
+    }
+
     private function scopeByRouter(Builder $query, User $user): Builder
     {
         if (! $user->isSuperAdmin()) {
-            $query->whereIn('router_id', $this->visibleRouterIds($user));
+            $query->whereIn($query->getModel()->qualifyColumn('router_id'), $this->visibleRouterIds($user));
         }
 
         return $query;

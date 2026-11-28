@@ -27,9 +27,11 @@ export default function GenerateVouchersScreen() {
   const [prefix, setPrefix] = useState('');
   const [generated, setGenerated] = useState<Voucher[] | null>(null);
 
-  const routers = useResource(() => api.routers.list({ per_page: 100 }), []);
+  const routers = useResource(() => api.routers.list({ per_page: 10 }), []);
   const plans = useResource(
-    () => (routerId ? api.plans.list({ router: routerId, active: 1, per_page: 100 }) : Promise.resolve(null)),
+    () => (routerId
+      ? api.plans.list({ router: routerId, active: 1, per_page: 10 })
+      : Promise.resolve(null)),
     [routerId],
   );
 
@@ -45,9 +47,7 @@ export default function GenerateVouchersScreen() {
   });
 
   return (
-    <Screen>
-      <PageHeader title="Generate vouchers" subtitle="Credentials are shown once, immediately after generation" back />
-
+    <Screen header={<PageHeader title="Generate vouchers" subtitle="Credentials are shown once, immediately after generation" back />}>
       <Section title="Router">
         {routers.loading && !routers.data ? <LoadingState label="Loading routers…" /> : null}
         {routers.error ? <ErrorState message={routers.error.message} onRetry={() => void routers.reload()} /> : null}

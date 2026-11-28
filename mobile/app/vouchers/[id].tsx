@@ -1,4 +1,5 @@
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Printer } from 'lucide-react-native';
 import { View } from 'react-native';
 import { useEffect, useState } from 'react';
 
@@ -22,6 +23,7 @@ import { formatBytes, formatDate, formatDuration, statusTone } from '@/src/forma
 import { printVouchers } from '@/src/print/vouchers';
 
 export default function VoucherDetailScreen() {
+  const router = useRouter();
   const params = useLocalSearchParams<{ id: string }>();
   const id = String(params.id ?? '');
   const resource = useResource(() => api.vouchers.show(id), [id]);
@@ -52,9 +54,7 @@ export default function VoucherDetailScreen() {
     return updated;
   });
 
-  const print = useAction(async () => {
-    if (voucher) await printVouchers([voucher]);
-  });
+  const print = useAction(async () => (voucher ? printVouchers([voucher]) : null));
 
   async function runRevoke(): Promise<void> {
     const result = await revoke.run();
@@ -63,13 +63,23 @@ export default function VoucherDetailScreen() {
   }
 
   return (
-    <Screen>
-      <PageHeader
-        back
-        title={voucher?.username ?? 'Voucher'}
-        subtitle={voucher?.public_id ?? 'HotSpot voucher'}
-      />
-
+    <Screen
+      header={
+        <PageHeader
+          back
+          title={voucher?.username ?? 'Voucher'}
+          subtitle={voucher?.public_id ?? 'HotSpot voucher'}
+          action={
+            <Button
+              label="Printer settings"
+              icon={Printer}
+              iconOnly
+              compact
+              onPress={() => router.push('/printer-settings')}
+            />
+          }
+        />
+      }>
       {notice ? (
         <Card>
           <InfoRow label="Result" value={notice} />
@@ -160,7 +170,7 @@ export default function VoucherDetailScreen() {
                     loading={print.pending}
                     onPress={async () => {
                       const result = await print.run();
-                      if (result === null) setNotice('The voucher sheet could not be generated.');
+                      setNotice(result?.note ?? 'The voucher could not be printed.');
                     }}
                   />
                 </>

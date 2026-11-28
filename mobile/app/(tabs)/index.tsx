@@ -1,10 +1,12 @@
 import { useRouter } from 'expo-router';
-import { RefreshControl, ScrollView, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Text, View } from 'react-native';
 
 import { api } from '@/src/api/endpoints';
 import { useAuth } from '@/src/auth/AuthContext';
 import { canViewReports, isSalesAgent } from '@/src/auth/permissions';
 import {
+  Avatar,
   Badge,
   Button,
   Card,
@@ -14,42 +16,55 @@ import {
   PageHeader,
   Screen,
   Section,
+  SelectChips,
   StatTile,
 } from '@/src/components/ui';
 import { useResource } from '@/src/hooks/useResource';
-import { formatDate, statusTone } from '@/src/format';
+import { formatDate, formatMoney, statusTone } from '@/src/format';
 import { theme } from '@/src/theme';
+import type { VoucherStatsPeriod } from '@/src/types';
+
+const STATS_PERIODS: Array<{ label: string; value: VoucherStatsPeriod }> = [
+  { label: 'Today', value: 'today' },
+  { label: 'This Week', value: 'week' },
+  { label: 'This Month', value: 'month' },
+];
 
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const reportsAllowed = canViewReports(user);
   const salesAgent = isSalesAgent(user);
+  const [statsPeriod, setStatsPeriod] = useState<VoucherStatsPeriod>('today');
   const overview = useResource(
     () => (reportsAllowed ? api.reports.overview() : Promise.resolve(null)),
     [reportsAllowed],
   );
+  const voucherStats = useResource(
+    () => (salesAgent ? api.vouchers.stats(statsPeriod) : Promise.resolve(null)),
+    [salesAgent, statsPeriod],
+  );
   const subscription = useResource(() => api.subscription.mine(), []);
 
-  const subscriptionLocked = reportsAllowed && overview.error?.code === 'subscription_inactive';
+  const subscriptionLocked =
+    (reportsAllowed && overview.error?.code === 'subscription_inactive')
+    || (salesAgent && voucherStats.error?.code === 'subscription_inactive');
   const data = overview.data;
 
   return (
     <Screen
-      refreshControl={
-        <RefreshControl
-          refreshing={overview.loading}
-          onRefresh={() => {
-            void overview.reload();
-            void subscription.reload();
-          }}
+      header={
+        <PageHeader
+          avatar={
+            <View style={{ marginRight: theme.spacing.xxs }}>
+              <Avatar name={user?.name} />
+            </View>
+          }
+          title={`Hello, ${user?.name?.split(' ')[0] ?? 'there'}`}
+          titleSize={18}
+          subtitle={salesAgent ? 'Voucher workflow' : 'Network operations at a glance'}
         />
       }>
-      <PageHeader
-        title={`Hello, ${user?.name?.split(' ')[0] ?? 'there'}`}
-        subtitle={salesAgent ? 'Voucher workflow' : 'Network operations at a glance'}
-      />
-
       {subscriptionLocked ? (
         <Card style={{ backgroundColor: theme.colors.warningSoft }}>
           <Badge label="Subscription required" tone="warning" />
@@ -63,14 +78,72 @@ export default function HomeScreen() {
       ) : null}
 
       {salesAgent ? (
-        <Section title="Voucher workspace">
-          <Card>
-            <ListRow title="Vouchers" subtitle="List, print, and review assigned vouchers" onPress={() => router.push('/(tabs)/vouchers')} />
-            <ListRow title="Generate vouchers" subtitle="Create vouchers for an assigned router and plan" onPress={() => router.push('/vouchers/generate')} />
-            <ListRow title="Assigned routers" subtitle="Read-only router details" onPress={() => router.push('/(tabs)/routers')} />
-            <ListRow title="Plans" subtitle="Read-only HotSpot packages" onPress={() => router.push('/(tabs)/plans')} />
-          </Card>
-        </Section>
+        <>
+          <Section title="Voucher stats">
+            <Card>
+              <SelectChips
+                options={STATS_PERIODS}
+                value={statsPeriod}
+                onChange={(value) => {
+                  if (value) {
+                    setStatsPeriod(value);
+                  }
+                }}
+              />
+
+              <View style={{ height: theme.spacing.sm }} />
+
+              {voucherStats.data ? (
+                <>
+                  <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <StatTile label="Total" value={voucherStats.data.total} compact />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <StatTile label="Active" value={voucherStats.data.active} tone="success" compact />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <StatTile label="Pending" value={voucherStats.data.pending} tone="warning" compact />
+                    </View>
+                  </View>
+
+                  <View style={{ height: theme.spacing.sm }} />
+
+                  <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <StatTile
+                        label="Revenue"
+                        value={formatMoney(
+                          voucherStats.data.revenue?.total_amount ?? 0,
+                          voucherStats.data.revenue?.by_currency[0]?.currency ?? 'NGN',
+                        )}
+                        caption={`${voucherStats.data.revenue?.voucher_count ?? 0} provisioned`}
+                        tone="warning"
+                        compact
+                      />
+                    </View>
+                  </View>
+                </>
+              ) : null}
+
+              {voucherStats.loading && !voucherStats.data && !subscriptionLocked ? (
+                <LoadingState label="Loading voucher stats…" />
+              ) : null}
+              {voucherStats.error && !subscriptionLocked ? (
+                <ErrorState message={voucherStats.error.message} onRetry={() => void voucherStats.reload()} />
+              ) : null}
+            </Card>
+          </Section>
+
+          <Section title="Voucher workspace">
+            <Card>
+              <ListRow title="Generate vouchers" subtitle="Create vouchers for an assigned router and plan" onPress={() => router.push('/vouchers/generate')} />
+              <ListRow title="Vouchers" subtitle="List, print, and review assigned vouchers" onPress={() => router.push('/(tabs)/vouchers')} />
+              <ListRow title="Plans" subtitle="Read-only HotSpot packages" onPress={() => router.push('/(tabs)/plans')} />
+              <ListRow title="Assigned routers" subtitle="Read-only router details" onPress={() => router.push('/(tabs)/routers')} />
+            </Card>
+          </Section>
+        </>
       ) : null}
 
       {overview.loading && !data ? <LoadingState label="Loading dashboard…" /> : null}
@@ -81,12 +154,12 @@ export default function HomeScreen() {
       {data ? (
         <>
           <Section title="Overview">
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <StatTile label="Routers online" value={`${data.routers.online}/${data.routers.total}`} tone="success" />
-              <StatTile label="Active vouchers" value={data.vouchers.active} />
-              <StatTile label="Active plans" value={data.plans.active} tone="primary" />
-              <StatTile label="Revenue" value={data.revenue.total_amount} tone="warning" />
-            </ScrollView>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm }}>
+              <StatTile label="Routers online" value={`${data.routers.online}/${data.routers.total}`} tone="success" compact />
+              <StatTile label="Active vouchers" value={data.vouchers.active} compact />
+              <StatTile label="Active plans" value={data.plans.active} tone="primary" compact />
+              <StatTile label="Revenue" value={data.revenue.total_amount} tone="warning" compact />
+            </View>
           </Section>
 
           <Section title="Operations">

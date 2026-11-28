@@ -20,6 +20,7 @@ import type {
   User,
   Voucher,
   VoucherStats,
+  VoucherStatsPeriod,
 } from '@/src/types';
 
 const segment = (value: Identifier): string => encodeURIComponent(String(value));
@@ -197,8 +198,8 @@ export const api = {
     list(params?: QueryParams): Promise<ListResult<Voucher>> {
       return apiClient.list<Voucher>('/vouchers', params);
     },
-    stats(): Promise<VoucherStats> {
-      return apiClient.data<VoucherStats>('/vouchers/stats');
+    stats(period: VoucherStatsPeriod = 'today'): Promise<VoucherStats> {
+      return apiClient.data<VoucherStats>('/vouchers/stats', { params: { period } });
     },
     show(id: Identifier): Promise<Voucher> {
       return apiClient.data<Voucher>(`/vouchers/${segment(id)}`);

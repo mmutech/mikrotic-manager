@@ -108,7 +108,7 @@ class SubscriptionController extends Controller
                 ->orWhere('email', 'like', $term));
         }
 
-        return UserResource::collection($query->orderBy('name')->paginate((int) ($filters['per_page'] ?? 15)))
+        return UserResource::collection($query->orderBy('name')->paginate((int) ($filters['per_page'] ?? 10)))
             ->additional(['meta' => ['filters' => $filters]]);
     }
 
@@ -134,7 +134,7 @@ class SubscriptionController extends Controller
             })
             ->with(['roles', 'permissions'])
             ->orderBy('name')
-            ->paginate((int) ($filters['per_page'] ?? 50));
+            ->paginate((int) ($filters['per_page'] ?? 10));
 
         $data = $users->getCollection()->map(function (User $user) use ($request, $status): array {
             $subscription = $user->subscriptions()->where('status', $status)->latest()->first();

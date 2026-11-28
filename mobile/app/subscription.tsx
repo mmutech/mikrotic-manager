@@ -56,9 +56,7 @@ export default function SubscriptionScreen() {
         : 'Needs renewal';
 
   return (
-    <Screen>
-      <PageHeader title="Subscription" subtitle="Request access and review request history" back />
-
+    <Screen header={<PageHeader title="Subscription" subtitle="Request access and review request history" back />}>
       {notice ? (
         <Card>
           <InfoRow label="Result" value={notice} />

@@ -196,7 +196,17 @@ export interface Voucher {
   created_at?: string | null;
 }
 
+export type VoucherStatsPeriod = 'today' | 'week' | 'month' | 'all';
+
+export interface VoucherRevenue {
+  period?: VoucherStatsPeriod;
+  total_amount: number;
+  voucher_count: number;
+  by_currency: Array<{ currency: string; vouchers: number; amount: number }>;
+}
+
 export interface VoucherStats {
+  period?: VoucherStatsPeriod;
   total: number;
   by_lifecycle: Record<string, number>;
   active: number;
@@ -209,6 +219,7 @@ export interface VoucherStats {
   connected_seconds: number;
   by_plan: Array<{ plan_id: Identifier; plan_name: string | null; total: number }>;
   recent: Voucher[];
+  revenue?: VoucherRevenue;
 }
 
 export interface Overview {
@@ -274,9 +285,24 @@ export interface BulkResult {
 
 export interface ApiMeta extends Record<string, unknown> {}
 
+export interface PaginationMeta extends ApiMeta {
+  current_page?: number;
+  last_page?: number;
+  per_page?: number;
+  total?: number;
+  from?: number | null;
+  to?: number | null;
+  links?: {
+    first?: string | null;
+    last?: string | null;
+    prev?: string | null;
+    next?: string | null;
+  };
+}
+
 export interface ListResult<T> {
   items: T[];
-  meta: ApiMeta;
+  meta: PaginationMeta;
   links?: Record<string, unknown>;
 }
 

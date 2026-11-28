@@ -47,7 +47,7 @@ class PlanController extends Controller
             $query->where('is_active', filter_var($filters['active'], FILTER_VALIDATE_BOOLEAN));
         }
 
-        return PlanResource::collection($query->latest()->paginate((int) ($filters['per_page'] ?? 20)))->additional([
+        return PlanResource::collection($query->latest()->paginate((int) ($filters['per_page'] ?? 10)))->additional([
             'meta' => ['filters' => $filters],
         ]);
     }

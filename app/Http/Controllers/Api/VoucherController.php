@@ -51,7 +51,7 @@ class VoucherController extends Controller
             $query->where('provisioning_status', $filters['provisioning']);
         }
 
-        $vouchers = $query->latest()->paginate((int) ($filters['per_page'] ?? 20));
+        $vouchers = $query->latest()->paginate((int) ($filters['per_page'] ?? 10));
         $liveUsage = app(LiveVoucherUsageService::class)->forVouchers($vouchers->getCollection());
 
         foreach ($vouchers as $voucher) {
@@ -68,7 +68,14 @@ class VoucherController extends Controller
         $user = $request->user();
         Gate::forUser($user)->authorize('viewAny', Voucher::class);
 
-        $stats = app(ReportService::class)->voucherStats($user);
+        $filters = $request->validate([
+            'period' => ['nullable', 'string', 'in:today,week,month,all'],
+        ]);
+        $period = $filters['period'] ?? 'today';
+
+        $reports = app(ReportService::class);
+        $stats = $reports->voucherStats($user, $period);
+        $stats['revenue'] = $reports->voucherRevenue($user, $period);
         $stats['recent'] = VoucherResource::collection($stats['recent'])->resolve($request);
 
         return $this->json($stats);
